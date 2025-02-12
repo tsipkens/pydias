@@ -3,7 +3,8 @@ import numpy as np
 
 from scipy.ndimage import gaussian_filter
 
-from autils import autils, tfer
+from autils import autils
+from tfer import tfer
 
 def check_type(type, str):
     """
