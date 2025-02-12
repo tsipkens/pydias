@@ -62,7 +62,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             if spec[ii][0] == 'pma':
                 prop_p = spec[ii][2]
         
-        if mp_idx is not None:
+        if mp_idx is None:
             m = (np.pi/6) * grid_i.elements[:, rho_idx] * \
                 grid_i.elements[:, dm_idx] ** 3 * 1e-9
 
