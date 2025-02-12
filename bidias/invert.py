@@ -8,6 +8,8 @@ from scipy.optimize import lsq_linear, nnls
 
 import cvxpy as cp
 
+from autils.autils import textdone
+
 from bidias.Grid import PartialGrid
 
 def lsq(A, b, method=None):
@@ -273,6 +275,8 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Inverse posterior covariance.
     """
 
+    print('Performing Tikhonov inverion ...')
+
     x_length = A.shape[1]
 
     # Parse inputs
@@ -305,6 +309,8 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
 
     # Uncertainty quantification
     Gpo_inv = None
+
+    textdone()
 
     return x, D, Lpr0, Gpo_inv
 

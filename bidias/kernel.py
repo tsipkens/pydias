@@ -22,7 +22,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
 
-    print('[== Computing kernel ==]')
+    print('\r' + '\033[36m' + '[== Computing kernel ==]' + '\033[0m' + '\n')
 
     #== Parse inputs =================================#
     if z is None or len(z) == 0:
@@ -172,7 +172,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
     autils.textdone()
 
-    print('[== COMPLETE! ========]')
+    print('\r' + '\033[36m' + '[== COMPLETE! ========]' + '\033[0m' + '\n')
     
     return A, Ac
 
