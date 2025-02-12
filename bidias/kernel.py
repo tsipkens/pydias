@@ -22,7 +22,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
 
-    print('\r' + '\033[36m' + '[== Computing kernel ==]' + '\033[0m' + '\n')
+    print('\r' + '\033[36m' + '[==== COMPUTING KERNEL ====]' + '\033[0m' + '\n')
 
     #== Parse inputs =================================#
     if z is None or len(z) == 0:
@@ -37,25 +37,20 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     nc = len(spec)  # Number of classifiers
     Lambda = [None] * nc  # Initialize Lambda list
     
-    # Get dimension indices from grid_i object
-    dm_idx = None
-    mp_idx = None
-    da_idx = None
-
     # Get indices of grid dimension types. 
     # By default (if not supplied), assume a mass-mobility grid.
     if type is None:
-        dm_idx = 0
-        mp_idx = 1
-        rho_idx = None
-        da_idx = None
+        type = ['dm', 'mp']
 
-    else:
-        dm_idx = check_type(type, 'dm')
-        mp_idx = check_type(type, 'mp')
-        da_idx = check_type(type, 'da')
-        rho_idx = check_type(type, 'rho')
+    # Extract indices.
+    dm_idx = check_type(type, 'dm')
+    mp_idx = check_type(type, 'mp')
+    da_idx = check_type(type, 'da')
+    rho_idx = check_type(type, 'rho')
+    mrbc_idx = check_type(type, 'mrbc')
+    frbc_idx = check_type(type, 'frbc')
     
+    # MASS CHECK.
     # Unpack grid elements for transfer function evaluation.
     if rho_idx is not None:
         for ii in np.arange(len(spec)):
@@ -69,7 +64,8 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     elif mp_idx is not None:
         m = grid_i.elements[:, mp_idx]
     
-    # Handle cases where mobility diameter isn't given (required for PMA/charging)
+    # MOBILITY CHECK.
+    # Handle cases where mobility diameter isn't given (required for PMA/charging).
     if dm_idx is None:
         # OPTION 1: Use da and mp to compute dm if available
         if da_idx is not None and mp_idx is not None:
@@ -86,6 +82,17 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             dm = autils.mp2dm(grid_i.elements[:, mp_idx] * 1e-18, prop_p) * 1e9
     else:  # otherwise use explicit mobility diameter dimension
         dm = grid_i.elements[:, dm_idx]
+
+    # MRBC CHECK.
+    # Handle cases where mrbc is not given. Only relevant to SP2.
+    if mrbc_idx is None:
+        if frbc_idx is not None:  # then, convert from frbc
+            frbc = grid_i.elements[:, frbc_idx]
+            mrbc = frbc * grid_i.elements[:, mp_idx]
+            
+    else:  # otherwise use explicit mrbc dimension
+        mrbc = grid_i.elements[:, mrbc_idx]
+
     
     # Loop over classifiers to compute Lambda
     for ii in range(nc):
@@ -123,7 +130,9 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             sp = tfer.unpack(spec[ii][1])
 
-            v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries to speed computation
+            # Use voltage and angular speed to find unique setpoints.
+            # This speeds up computation.
+            v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries
             sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
             
             v, idx = np.unique(np.vstack((m, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
@@ -137,28 +146,46 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             autils.textdone()
         
-        elif classifier in ['bin', 'sp2']:
+        elif classifier in ['sp2', 'bin']:
             print('Computing binned contribution ...')
 
-            s_idx = spec[ii][2]
+            if classifier == 'sp2':
+                s = mrbc
+            else:
+                s = grid_i.elements[:, spec[ii][2]]
+            print(s)
+            
+            # Separate procedure to find unique values, as order matters.
+            def unique2(s):
+                idx = np.zeros(len(s), dtype=np.int16)
+                idx[0] = 0
+                su = np.array(s[0])
+                for ss in range(1, len(s)):
+                    if s[ss] == s[ss-1]:
+                        idx[ss] = idx[ss-1]
+                    else:
+                        idx[ss] = idx[ss-1] + 1
+                        su = np.append(su, s[ss])
+                return su, idx
 
-            s_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
-            s, idx = np.unique(grid_i.elements[:, s_idx], return_inverse=True)  # extract corresponding mobility diameters from grid
-
+            # Now sort values.
+            s_star, idx_star = unique2(spec[ii][1])  # find unique entries to speed computation
+            s, idx = unique2(s)  # extract corresponding mobility diameters from grid
+            
+            # Now compute transfer function.
             Lambda[ii] = tfer.bin(s_star, s)
 
             Lambda[ii] = Lambda[ii][idx_star,:]
             Lambda[ii] = Lambda[ii][:,idx]
 
+            # Add dimensions in case charging.
             Lambda[ii] = np.expand_dims(Lambda[ii], axis=2)
-            Lambda[ii] = np.repeat(Lambda[ii], len(z), axis=2)
 
             autils.textdone()
-        
-        # Add other cases for 'pma', 'aac', 'bin', etc., similarly...
+
     
     # Compile the kernel
-    print(" Compiling kernel ...")
+    print("Compiling kernel ...")
     Ac = Lambda[0]
     for ii in range(1, nc):
         Ac = Ac * Lambda[ii]
@@ -172,7 +199,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
     autils.textdone()
 
-    print('\r' + '\033[36m' + '[== COMPLETE! ========]' + '\033[0m' + '\n')
+    print('\r' + '\033[36m' + '[======= COMPLETE! =======]' + '\033[0m' + '\n')
     
     return A, Ac
 
