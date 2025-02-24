@@ -3,6 +3,7 @@ archive/
 working/
 data/
 main_invert*
+main_x*
 jupy/
 
 # Byte-compiled / optimized / DLL files
