@@ -270,6 +270,8 @@ class Grid:
             plt.xlabel(self.type[0])
             plt.ylabel(self.type[1])
 
+        plt.gca().set_box_aspect(1)
+
     def scatter(self, x, cmap=sns.color_palette('mako_r', as_cmap=True), edgecolors='k', linewidth=0.2, **kwargs):
         
         plt.scatter(self.elements[:,0], self.elements[:,1], 20 + 35 * x / np.max(x), x, \
@@ -310,12 +312,16 @@ class Grid:
 
         plt.colorbar()
     
-    def transpose(self):
+    def transpose(self, x=None):
         grid = Grid(edges=[self.edges[1], self.edges[0]], discrete=np.flip(self.discrete))
         if not self.type == None:
             grid.type = [self.type[1], self.type[0]]
 
-        return grid
+        if np.any(x == None):
+            return grid
+        else:
+            x = (self.reshape(x).T).ravel()
+            return grid, x
 
     
 class PartialGrid(Grid):
@@ -384,6 +390,10 @@ class PartialGrid(Grid):
         adj = coo_matrix(adj)
 
         return adj, isedge
+    
+    def reshape(self, x):
+        x = self.partial2full(x)
+        return x.reshape([self.ne[1], self.ne[0]])
 
     def dr(self):
         """
@@ -455,7 +465,6 @@ class PartialGrid(Grid):
         Removes entries for missing indices.
         """
         
-        x = self.partial2full(x)
         x[np.isnan(x)] = 0
         super().plot2d(x, **kawrgs)
 
