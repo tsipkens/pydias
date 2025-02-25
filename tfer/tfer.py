@@ -53,6 +53,9 @@ def show(s):
 
 
 def shape_inputs(s, s_star=None, z=None):
+    """
+    Input parser for transfer function methods below.
+    """
 
     if np.ndim(s) == 1:
         s = np.expand_dims(s, 1).T

@@ -275,7 +275,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Inverse posterior covariance.
     """
 
-    print('Performing Tikhonov inverion ...')
+    print('Performing Tikhonov inversion ...')
 
     x_length = A.shape[1]
 

@@ -153,7 +153,6 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
                 s = mrbc
             else:
                 s = grid_i.elements[:, spec[ii][2]]
-            print(s)
             
             # Separate procedure to find unique values, as order matters.
             def unique2(s):
@@ -199,7 +198,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
     autils.textdone()
 
-    print('\r' + '\033[36m' + '[======= COMPLETE! =======]' + '\033[0m' + '\n')
+    print('\r' + '\033[36m' + '[======= COMPLETE! =======]' + '\033[0m' + '\n\n')
     
     return A, Ac
 
