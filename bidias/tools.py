@@ -1,7 +1,7 @@
 
 import numpy as np
 
-from bidias.Grid import Grid
+from bidias.Grid import Grid, PartialGrid
 
 def x2y(x, grid_x, fun=None, dim=0, span_y=None, n_y=200):
     """
@@ -52,12 +52,17 @@ def x2y(x, grid_x, fun=None, dim=0, span_y=None, n_y=200):
     
     if dim == 1:
         grid_y = Grid(span=[span_y, grid_x.span[1]], ne=[n_y, len(grid_x.edges[1])])
+        grid_y.type = ['', grid_x.type[1]]
     else:
         grid_y = Grid(span=[grid_x.span[0], span_y], ne=[len(grid_x.edges[0]), n_y])
+        grid_y.type = [grid_x.type[0], '']
     
     x_rs = grid_x.reshape(x)
     if dim == 1:
         x_rs = x_rs.T
+
+    # Zero entries that are NaN (i.e., out-of-scope of PartialGrid).
+    x_rs[np.isnan(x_rs)] = 0
     
     n_dim = grid_x.ne[dim]
     y = np.zeros((n_dim, len(y_n)))
@@ -91,5 +96,11 @@ def x2y(x, grid_x, fun=None, dim=0, span_y=None, n_y=200):
     
     if dim == 0:
         y = y.T
+
+    y = y.ravel()
+
+    # Doesn't work as function is generic (not required to be power law).
+    # if isinstance(grid_x, PartialGrid):
+    #     grid_y = PartialGrid(grid_x.span, grid_x.ne, r=grid_x.r, slope=grid_x.slope)
     
-    return y.ravel(), grid_y, T
+    return y, grid_y, T
