@@ -1,7 +1,8 @@
 
 import numpy as np
 
-from autils import tfer, props
+from autils import props
+from tfer import tfer
 
 
 def gen_pma(sp, m, d, z=None, prop=None, opt=None, **kwargs):

@@ -1,0 +1,3 @@
+[submodule "autils"]
+	path = autils
+	url = https://github.com/tsipkens/py-autils

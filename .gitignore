@@ -2,7 +2,8 @@
 archive/
 working/
 data/
-main_*
+main_w*
+main_x*
 jupy/
 
 # Byte-compiled / optimized / DLL files
