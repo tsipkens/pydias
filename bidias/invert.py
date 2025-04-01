@@ -6,9 +6,11 @@ from scipy.sparse.linalg import lsqr
 from scipy.linalg import cholesky, solve, lstsq
 from scipy.optimize import lsq_linear, nnls
 
+import time
+
 import cvxpy as cp
 
-from autils.autils import textdone
+from bidias.tools import textdone
 
 from bidias.Grid import PartialGrid
 
@@ -274,8 +276,10 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     Gpo_inv : np.ndarray, optional
         Inverse posterior covariance.
     """
+    print('\r' + '\033[36m' + '[ TIKHONOV INVERSION ]' + '\033[0m')
+    print('Running ...', end="", flush=True)
 
-    print('Performing Tikhonov inversion ...')
+    start_time = time.time() # enables timing
 
     x_length = A.shape[1]
 
@@ -310,7 +314,10 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     # Uncertainty quantification
     Gpo_inv = None
 
-    textdone()
+    end_time = time.time()
+    textdone(f' ({end_time - start_time:.2f} s)')
+
+    print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
     return x, D, Lpr0, Gpo_inv
 
@@ -345,6 +352,8 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
 def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None, grid=None):
 
+    print('\r' + '\033[36m' + '[ EXPONENTIAL DISTANCE INVERSION ]' + '\033[0m')
+
     if vec1 is None:
         vec1 = []
 
@@ -361,14 +370,24 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None
     #-------------------------------------------------------------#
 
     # Use external function to evaluate prior covariance
+    print('Building Lpr ...', end="", flush=True)
+    start_time = time.time()  # time the contribution
     Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid)
     Lpr = lam * Lpr0
+    end_time = time.time()
+    textdone(f' ({end_time - start_time:.2f} s)')
 
-    #-- Choose and execute solver --------------------------------#
+    # Augment data with prior matrix.
     A_aug = sp.vstack([A, Lpr]).todense()
     b_aug = np.hstack([b, np.zeros(x_length)])
 
+    #-- Choose and execute solver --------------------------------#
+    print('Inverting system ...', end="", flush=True)
+    start_time = time.time()  # time the contribution
     x = nnls(A_aug, b_aug)[0]
+    end_time = time.time()
+    textdone(f' ({end_time - start_time:.2f} s)')
+
     D = None  # inverse operator placeholder (modify based on the logic)
 
     #-- Uncertainty quantification -------------------------------#
@@ -376,5 +395,7 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None
         Gpo_inv = A.T @ A + Lpr.T @ Lpr
     else:
         Gpo_inv = None
+
+    print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
     return x, D, Lpr0, Gpo_inv

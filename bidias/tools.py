@@ -124,3 +124,13 @@ def get_transform(spec:str):
         fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
 
     return fun, T, c0
+
+
+def textdone(lineend=''):
+    print('\033[32m' + ' < DONE!' + '\033[0m' + lineend)
+
+def textblue(txt):
+    """
+    Print blue text (for headings).
+    """
+    print('\r' + '\033[36m' + txt + '\033[0m')
