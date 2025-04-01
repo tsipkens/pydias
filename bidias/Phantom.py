@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 
 from scipy.stats import multivariate_normal
 
+import bidias.tools as tools
+
 import warnings
 
 class Phantom:
@@ -114,8 +116,8 @@ class Phantom:
 
         return prop
 
-
-    def cov2corr(self, Sig):
+    @staticmethod
+    def cov2corr(Sig):
         """
         Converts a covariance matrix to a correlation matrix.
 
@@ -137,6 +139,28 @@ class Phantom:
         R = np.diag([1, 1]) + np.rot90(np.diag([R12, R12]))
         
         return R
+
+    @staticmethod
+    def corr2cov(R, s):
+        """
+        Converts a covariance matrix to a correlation matrix.
+        """
+        s12 = s[0] * s[1] * R # compute off-diagonal
+        return [[s[0] ** 2, s12], [s12, s[1] ** 2]]
+
+    def transform(self, T, c0=np.array([0,0])):
+        """
+        Transform phantom to a different domain. 
+
+        T: Transformation matrix.
+        c: Shift in mean.
+        """
+
+        # Consider preset options, specific by T = str.
+        if type(T) == str:
+            _, T, c0 = tools.get_transform(T)
+
+        return Phantom('standard', T @ self.mu + c0, T @ self.Sig @ T.T)
 
         
     def show(self):

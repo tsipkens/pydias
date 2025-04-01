@@ -4,6 +4,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 from autils import autils
+from bidias.tools import textdone
 from tfer import tfer
 
 def check_type(type, str):
@@ -22,7 +23,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
 
-    print('\r' + '\033[36m' + '[==== COMPUTING KERNEL ====]' + '\033[0m' + '\n')
+    print('\r' + '\033[36m' + '[ BUILDING KERNEL ]' + '\033[0m')
 
     #== Parse inputs =================================#
     if z is None or len(z) == 0:
@@ -99,7 +100,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         classifier = spec[ii][0]
         
         if classifier == 'charger':
-            print('Computing charger contribution ...')
+            print('Computing charger contribution ...', end="", flush=True)
             
             d, idx = np.unique(dm, return_inverse=True)
 
@@ -110,10 +111,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             Lambda[ii] = Lambda[ii][:,idx,:]
 
-            autils.textdone()
+            textdone()
         
         elif classifier in ['dma', 'smps']:
-            print('Computing DMA contribution ...')
+            print('Computing DMA contribution ...', end="", flush=True)
 
             d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
             d, idx = np.unique(grid_i.elements[:, dm_idx], return_inverse=True)  # extract corresponding mobility diameters from grid
@@ -123,10 +124,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             Lambda[ii] = Lambda[ii][idx_star,:,:]
             Lambda[ii] = Lambda[ii][:,idx,:]
 
-            autils.textdone()
+            textdone()
         
         elif classifier == 'pma':
-            print('Computing PMA contribution ...')
+            print('Computing PMA contribution ...', end="", flush=True)
 
             sp = tfer.unpack(spec[ii][1])
 
@@ -144,10 +145,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             Lambda[ii] = Lambda[ii][idx_star,:,:]
             Lambda[ii] = Lambda[ii][:,idx,:]
 
-            autils.textdone()
+            textdone()
         
         elif classifier in ['sp2', 'bin']:
-            print('Computing binned contribution ...')
+            print('Computing binned contribution ...', end="", flush=True)
 
             if classifier == 'sp2':
                 s = mrbc
@@ -180,11 +181,11 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             # Add dimensions in case charging.
             Lambda[ii] = np.expand_dims(Lambda[ii], axis=2)
 
-            autils.textdone()
+            textdone()
 
     
     # Compile the kernel
-    print("Compiling kernel ...")
+    print("Compiling kernel ...", end="", flush=True)
     Ac = Lambda[0]
     for ii in range(1, nc):
         Ac = Ac * Lambda[ii]
@@ -196,9 +197,9 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     # Convert to sparse matrix
     # A = csr_matrix(A)
 
-    autils.textdone()
+    textdone()
 
-    print('\r' + '\033[36m' + '[======= COMPLETE! =======]' + '\033[0m' + '\n\n')
+    print('\r' + '\033[36m' + '[ COMPLETE! ]' + '\033[0m' + '\n\n')
     
     return A, Ac
 
