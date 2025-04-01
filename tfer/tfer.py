@@ -932,8 +932,9 @@ def parse_inputs(sp, m, d, z, prop):
         beta = np.array(sp['beta'])
 
         C0_over_m = C0 / m
-        r_m = (np.sqrt(C0_over_m) - np.sqrt(C0_over_m - 4 * alpha * beta)) / (2 * alpha)
-        r_p = (np.sqrt(C0_over_m) + np.sqrt(C0_over_m - 4 * alpha * beta)) / (2 * alpha)
+        with np.errstate(invalid='ignore'):  # sqrt() occasionally negative values
+            r_m = (np.sqrt(C0_over_m) - np.sqrt(C0_over_m - 4 * alpha * beta)) / (2 * alpha)
+            r_p = (np.sqrt(C0_over_m) + np.sqrt(C0_over_m - 4 * alpha * beta)) / (2 * alpha)
 
         # Determine which root is closer to the centerline radius
         bo = np.abs(r_m - prop['rc']) > np.abs(r_p - prop['rc'])
@@ -1010,8 +1011,9 @@ def tfer_1C(sp, m, d, z, prop={}):
                 3 * sp['beta'] ** 2 / (prop['rc'] ** 4) + C0 / (m * (prop['rc'] ** 2)))
 
     # -- Evaluate G0 and transfer function ------------------------------------#
-    G0 = lambda r: prop['rc'] + (r - prop['rc'] + C3 / C4) * \
-                   np.exp(-C4 * prop['L'] / prop['v_bar']) - C3 / C4
+    with np.errstate(over='ignore'):  # exp() occasionally overflows
+        G0 = lambda r: prop['rc'] + (r - prop['rc'] + C3 / C4) * \
+                    np.exp(-C4 * prop['L'] / prop['v_bar']) - C3 / C4
 
     ra = np.minimum(prop['r2'], np.maximum(prop['r1'], G0(prop['r1'])))
     rb = np.minimum(prop['r2'], np.maximum(prop['r1'], G0(prop['r2'])))
