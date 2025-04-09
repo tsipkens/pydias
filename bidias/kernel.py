@@ -71,7 +71,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         # OPTION 1: Use da and mp to compute dm if available
         if da_idx is not None and mp_idx is not None:
             da = grid_i.elements[:, da_idx]
-            dm = autils.mp_da2dm(m, da)
+            dm = autils.mp_da2dm(m * 1e-18, da * 1e-9) * 1e9
 
         # OPTION 2: Apply mass-mobility relationship
         elif mp_idx is not None:
