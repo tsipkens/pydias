@@ -183,6 +183,22 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             textdone()
 
+        elif classifier == 'aac':
+            print('Computing aac contribution ....')
+
+            d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
+            d, idx = np.unique(grid_i.elements[:, da_idx], return_inverse=True)  # extract corresponding mobility diameters from grid
+
+            Lambda[ii], _, _= tfer.aac(d_star, d, spec[ii][2], spec[ii][3])
+
+            Lambda[ii] = Lambda[ii][idx_star,:]
+            Lambda[ii] = Lambda[ii][:,idx]
+            
+            # Add dimensions in case charging.
+            Lambda[ii] = np.expand_dims(Lambda[ii], axis=2)
+
+            textdone()
+
     
     # Compile the kernel
     print("Compiling kernel ...", end="", flush=True)
