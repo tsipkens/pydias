@@ -5,6 +5,7 @@ data/
 main_w*
 main_x*
 jupy/
+out/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
