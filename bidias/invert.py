@@ -326,7 +326,6 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
 def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
-        vec1 = grid.elements[:,0]
         el = grid.elements
     else:
         el = np.hstack((vec1, vec2))
