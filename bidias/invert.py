@@ -5,12 +5,13 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import lsqr
 from scipy.linalg import cholesky, solve, lstsq
 from scipy.optimize import lsq_linear, nnls
+from scipy.spatial.distance import pdist, squareform
 
 import time
 
 import cvxpy as cp
 
-from bidias.tools import textdone
+from cmap import textdone
 
 from bidias.Grid import PartialGrid
 
@@ -326,26 +327,20 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
         vec1 = grid.elements[:,0]
-        vec2 = grid.elements[:,1]
+        el = grid.elements
+    else:
+        el = np.hstack((vec1, vec2))
     
-    #-- Compute distances between elements -----------------------------------#
-    vec2_a, vec2_b = np.meshgrid(vec2, vec2)  # for differences in 2nd dim
-    vec1_a, vec1_b = np.meshgrid(vec1, vec1)  # for differences in 1st dim
-
+    #-- Compute Mahalanobis distances between elements -----------------------#
     Gd_inv = np.linalg.inv(Gd)
-    dr1 = np.log10(vec1_a) - np.log10(vec1_b)
-    dr2 = vec2_a - vec2_b
-
-    D = np.sqrt(
-        dr1**2 * Gd_inv[0, 0] +
-        2 * dr2 * dr1 * Gd_inv[0, 1] +
-        dr2**2 * Gd_inv[1, 1]
-    )  # distance
+    D = squareform(pdist(np.log10(el), metric='mahalanobis', VI=Gd_inv))
 
     #-- Compute prior covariance matrix --------------------------------------#
     Gpr = np.exp(-D)
 
     Gpr_inv = np.linalg.pinv(Gpr)
+    Gpr_inv[Gpr_inv < 0.01 * np.max(Gpr_inv)] = 0  # zero very small values
+
     Lpr = cholesky(Gpr_inv, lower=False)
 
     return Lpr, D, Gpr
