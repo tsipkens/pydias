@@ -51,8 +51,43 @@ def lsq(A, b, method=None):
 
     return x
 
+def adjacency(nx, ny, w=1):
+    """
+    Compute the adjacency matrix using a four-point stencil.
+    
+    Parameters:
+    w: Optional weight to apply to vertical pixels.
+    
+    Returns:
+    adj: Adjacency matrix after processing.
+    isedge: Boolean array indicating whether an element is adjacent to a new edge.
+    """
+    ind1 = []
+    ind2 = []
+    vec = []
 
-def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
+    for jj in range(nx * ny):
+        if (jj + 1) % nx != 0:  # up pixels
+            ind1.append(jj)
+            ind2.append(jj + 1)
+            vec.append(w)
+        if jj % nx != 0:  # down pixels
+            ind1.append(jj)
+            ind2.append(jj - 1)
+            vec.append(w)
+        if jj >= nx:  # left pixels
+            ind1.append(jj)
+            ind2.append(jj - nx)
+            vec.append(1)
+        if jj < (nx * ny - nx):  # right pixels
+            ind1.append(jj)
+            ind2.append(jj + nx)
+            vec.append(1)
+
+    adj = sp.coo_matrix((vec, (ind1, ind2)), shape=(nx * ny, nx * ny))
+    return adj
+
+def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0, anisotropy=1):
     """
     Generates Tikhonov smoothing operators/matrix, L.
 
@@ -86,102 +121,83 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
     Lpr2 : sparse matrix, optional
         Subcomponent of the Tikhonov matrix in the second dimension.
     """
-    
-    if order is None:
-        order = 2  # Default order
 
-    if type(order) == list:
-        if len(order) == 1:
-            var = [0]
-            order = order[0]
-        else:
-            var = order[1]
-            order = order[0]
-    else:
-        var = [0]
-    
-    if bc is None:
+    # Interpret boundary condition. 
+    # Convert to integers correspond to which order derivative is zero.
+    if bc == 'dirichlet':
+        bc = 0
+    elif bc == 'nuemann':
+        bc = 1
+    elif bc is None:
         bc = int(np.floor(order))  # By default, match boundary condition to order
     
+    # Get dimensions. 
+    # If Grid or PartialGrid, derive from grid. 
+    # Otherwise, use n and x_length. 
     if not grid == None:
-        n = grid.ne[0]
+        nx = grid.ne[0]
+        ny = grid.ne[1]
         x_length = np.prod(grid.ne)
+
+        A = grid.adjacency()  # adjacency matrix
+        isedge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
+
     else:
-        if x_length % n != 0 and order != 0:
+        if x_length % nx != 0 and order != 0:
             raise ValueError("x_length must be an integer multiple of n.")
+        
+        # Now build adjacency matrix. 
+        ny = np.int32(x_length / nx)
+        A = adjacency(nx, ny)
+        isedge = np.where(np.sum(A, axis=1).A1 != 4)
+        
+    # Handle aniostropy by calculating weightings.
+    # wx = anisotropy / ((1 + anisotropy))
+    # wy = 1 / (1 + anisotropy)
 
-    # Initialize Lpr0 (and Lpr1, Lpr2 if applicable)
-    Lpr0 = None
     Lpr1 = None
-    Lpr2 = None
+    Lpr2 = None # default if not overwritten
 
-    # Generate Tikhonov smoothing matrix based on the order
+    # Build base matrix.
     if order == 0:
-        # 0th order Tikhonov
-        if not grid == None:
-            Lpr0 = -sp.eye(grid.Ne, format='csr')
-        else:
-            Lpr0 = -sp.eye(x_length, format='csr')
+        Lpr0 = -sp.eye(x_length, format='csr')
 
     elif order == 1:  # 1st order Tikhonov
-        if type(grid) == PartialGrid:
-            Lpr0 = grid.l1()
-            Lpr0 = sp.csr_matrix(Lpr0)
 
-        else:
-            I1 = 0.5 * sp.eye(n)
-            E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-            D1 = E1 - I1
+        Lpr0 = sp.triu(A, k=1)  # forward difference corresponds to upper triangle
+        if bc == 1:
+            D = sp.diags(Lpr0.sum(axis=1).A1)  # adjust diagonal
+        elif bc == 0:
+            D = sp.diags(2 * np.ones(np.shape(Lpr0)[0]))
 
-            m = x_length // n
-            I2 = 0.5 * sp.eye(m)
-            E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-            D2 = E2 - I2
+        Lpr0 = D - Lpr0
+        Lpr0 = Lpr0[:-1, :]  # remove trailing zeros
 
-            Lpr0 = sp.kron(I2, D1) + sp.kron(D2, I1)
-            Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
-            Lpr0 = Lpr0[:-1, :]
-            
+        # Lpr0 = sp.vstack((sp.csr_matrix(np.zeros((1,np.shape(Lpr0)[0]))), Lpr0))  # would append zeros at top for bc handling
 
-    elif order == 2:
-        # 2nd order Tikhonov (with variants)
+    elif order == 2:  # 2nd order Tikhonov (with variants)
 
         # Case 0: standard Laplacian
-        if var[0] == 0:
-            if len(var) == 1:
-                var.append(1)
-                
-            I1 = 0.25 * sp.eye(n, n)
-            E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-            D1 = E1 + E1.T - I1
+        if variant == 0:
+            if bc == 1:
+                D = sp.diags(A.sum(axis=1).A1)  # adjust diagonal
+            elif bc == 0:
+                D = sp.diags(4 * np.ones(np.shape(A)[0]))
 
-            m = x_length // n
-            I2 = 0.25 * sp.eye(m, m)
-            E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-            D2 = E2 + E2.T - I2
-
-            Lpr1 = var[1] * sp.kron(I2, D1)
-            Lpr2 = sp.kron(D2, I1)
-            Lpr0 = Lpr1 + Lpr2
-            Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
+            Lpr0 = D - A
 
         # Case 1: difference in both dimensions
-        elif var[0] == 1:
-            if len(var) == 1:
-                var.append(1)
+        elif variant == 1:
+            Ix = sp.eye(nx, nx)
+            Dx = -2 * sp.eye(ny, ny)
+            Dx = sp.diags([np.ones(ny - 1), np.ones(ny - 1)], [-1, 1]) + Dx
 
-            m = x_length // n
+            Iy = sp.eye(ny, ny)
+            Dy = -2 * sp.eye(nx, nx)
+            Dy = sp.diags([np.ones(nx - 1), np.ones(nx - 1)], [-1, 1]) + Dy
 
-            I1 = sp.eye(n, n)
-            D1 = -2 * sp.eye(m, m)
-            D1 = sp.diags([np.ones(m - 1), np.ones(m - 1)], [-1, 1]) + D1
-
-            I2 = sp.eye(m, m)
-            D2 = -2 * sp.eye(n, n)
-            D2 = sp.diags([np.ones(n - 1), np.ones(n - 1)], [-1, 1]) + D2
-
-            Lpr1 = var[1] * sp.kron(I2, D2)
-            Lpr2 = sp.kron(D1, I1)
+            Lpr1 = var[1] * sp.kron(Iy, Dy)
+            Lpr2 = sp.kron(Dx, Ix)
             Lpr0 = Lpr1 - Lpr2
 
             # if isinstance(grid, PartialGrid):
@@ -195,18 +211,18 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
 
     elif order == 3:
         # 3rd order derivative
-        I1 = sp.eye(n)
-        m = x_length // n
+        Ix = sp.eye(nx)
+        ny = x_length // nx
         
-        D1 = sp.csr_matrix((np.ones(m-2), (np.arange(m-2), np.arange(2, m))), shape=(m, m))
-        D1 = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(m, m))
+        Dx = sp.csr_matrix((np.ones(ny-2), (np.arange(ny-2), np.arange(2, ny))), shape=(ny, ny))
+        Dx = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(ny, ny))
 
-        I2 = sp.eye(m)
-        D2 = sp.csr_matrix((np.ones(n-2), (np.arange(n-2), np.arange(2, n))), shape=(n, n))
-        D2 = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(n, n))
+        Iy = sp.eye(ny)
+        Dy = sp.csr_matrix((np.ones(nx-2), (np.arange(nx-2), np.arange(2, nx))), shape=(nx, nx))
+        Dy = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(nx, nx))
 
-        Lpr1 = sp.kron(I2, D2)
-        Lpr2 = sp.kron(D1, I1)
+        Lpr1 = sp.kron(Iy, Dy)
+        Lpr2 = sp.kron(Dx, Ix)
         Lpr0 = Lpr1 + Lpr2
 
         # if hasattr(grid, 'missing'):
@@ -220,16 +236,16 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
             if hasattr(grid, 'l1'):
                 Lpr0 = grid.l1(slope, bc)
             else:
-                I1 = 0.5 * sp.eye(n)
-                E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-                D1 = E1 - I1
+                Ix = 0.5 * sp.eye(nx)
+                Ex = sp.csr_matrix((np.ones(nx-1), (np.arange(nx-1), np.arange(1, nx))), shape=(nx, nx))
+                Dx = Ex - Ix
 
-                m = x_length // n
-                I2 = slope / 2 * sp.eye(m)
-                E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-                D2 = E2 - I2
+                ny = x_length // nx
+                Iy = slope / 2 * sp.eye(ny)
+                Ey = sp.csr_matrix((np.ones(ny-1), (np.arange(ny-1), np.arange(1, ny))), shape=(ny, ny))
+                Dy = Ey - Iy
 
-                Lpr0 = sp.kron(I2, D1) + sp.kron(D2, I1)
+                Lpr0 = sp.kron(Iy, Dx) + sp.kron(Dy, Ix)
                 Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
                 Lpr0 = Lpr0[:-1, :]
 
