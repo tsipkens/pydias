@@ -1,10 +1,13 @@
 
 import numpy as np
 
+import scipy.sparse as sp
 from scipy.sparse import coo_matrix, lil_matrix
 
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from cmap import get_colormap
 
 import tqdm
 
@@ -118,6 +121,17 @@ class Grid:
 
         adj = coo_matrix((vec, (ind1, ind2)), shape=(np.prod(self.ne), np.prod(self.ne)))
         return adj
+    
+    def isedge(self):
+        """
+        A function to compute which elements are at the edges of the grid domain.
+        """
+        left = np.where(self.elements[:, 0] == self.edges[0][0])[0]  # edges on the left side of the grid
+        right = np.where(self.elements[:, 0] == self.edges[0][-1])[0]  # etc.
+        down = np.where(self.elements[:, 1] == self.edges[1][0])[0]
+        up = np.where(self.elements[:, 1] == self.edges[1][-1])[0]
+
+        return np.concatenate((down, left, right, up)) # return combined indices
 
     def reshape(self, x):
         return x.reshape([self.ne[1], self.ne[0]])
@@ -254,11 +268,14 @@ class Grid:
 
         return C, rmin, rmax
     
-    def plot2d(self, x, cmap=sns.color_palette('rocket_r', as_cmap=True), **kwargs):
+    def plot2d(self, x, cmap='rocket_r', **kwargs):
+
+        if type(cmap) is str:
+            cmap = get_colormap(cmap)
 
         xp, yp = np.meshgrid(self.edges[0], self.edges[1])
         
-        plt.pcolor(xp, yp, self.reshape(x), cmap=cmap, **kwargs)
+        mesh = plt.pcolor(xp, yp, self.reshape(x), cmap=cmap, **kwargs)
 
         if self.discrete[0] == 'log':
             plt.xscale('log')
@@ -272,7 +289,12 @@ class Grid:
 
         plt.gca().set_box_aspect(1)
 
-    def scatter(self, x, cmap=sns.color_palette('mako_r', as_cmap=True), edgecolors='k', linewidth=0.2, **kwargs):
+        return mesh
+
+    def scatter(self, x, cmap='mako_r', edgecolors='k', linewidth=0.2, **kwargs):
+
+        if type(cmap) is str:
+            cmap = get_colormap(cmap)
         
         plt.scatter(self.elements[:,0], self.elements[:,1], 20 + 35 * x / np.max(x), x, \
                     cmap=cmap, edgecolors=edgecolors, linewidth=linewidth, **kwargs)
@@ -360,12 +382,12 @@ class PartialGrid(Grid):
         self.nelements_tr = self.nelements_tr[self.remaining, :]
         self.Ne = self.elements.shape[0]
 
-        self.adj, _ = PartialGrid.adjacency(self)
+        self.adj = PartialGrid.adjacency(self)
 
     
     def adjacency(self, w=1):
         """
-        Compute the adjacency matrix for the full grid using a four-point stencil.
+        Compute the adjacency matrix using a four-point stencil.
         
         Parameters:
         w: Optional weight to apply to vertical pixels.
@@ -379,17 +401,26 @@ class PartialGrid(Grid):
         adj = Grid.adjacency(self, w)
         adj = adj.todense()
 
-        # Identify elements next to the new edge
-        adju = np.triu(adj, 2)  # Get the upper triangle of the matrix with offset 2
-        isedge = np.any(adju[:, self.missing], axis=1)  # Check for adjacency to missing elements
-        isedge = np.delete(isedge, self.missing)  # Remove missing elements from the edge flagging
-        
         # Remove rows and columns corresponding to missing elements
         adj = adj[self.remaining, :]
         adj = adj[:, self.remaining]
         adj = coo_matrix(adj)
 
-        return adj, isedge
+        return adj
+    
+    def isedge(self):
+        """
+        A function to compute which elements are at the edges of the grid domain.
+        """
+        # Identify elements next to the new edges.
+        adju = sp.triu(Grid.adjacency(self, 1), 2).tocsr()  # Get the upper triangle of the matrix with offset 2
+        missingedge = adju[:, self.missing].sum(axis=1).flatten().astype(bool)  # Check for adjacency to missing elements
+        missingedge = np.delete(missingedge, self.missing)  # Remove missing elements from the edge flagging
+        missingedge = np.where(missingedge.A1)[0]
+
+        # Finally, return the combination of the 
+        # original edge elements for full grid with the new edge elements.
+        return np.concatenate((Grid.isedge(self), missingedge))
     
     def reshape(self, x):
         x = self.partial2full(x)
@@ -408,7 +439,7 @@ class PartialGrid(Grid):
         # NOTE: Could add areas for partial cells. Currently use whole cells if any part is in the domain. 
 
         return dr, dr1, dr2
-    
+           
     def l1(self, w=1, bc=1):
         """
         Compute the first-order Tikhonov operator.
@@ -466,7 +497,7 @@ class PartialGrid(Grid):
         """
         
         x[np.isnan(x)] = 0
-        super().plot2d(x, **kawrgs)
+        mesh = super().plot2d(x, **kawrgs)
 
         ncut = len(self.slope)
 
@@ -484,3 +515,5 @@ class PartialGrid(Grid):
             plt.plot(xl, ye, color='k', linewidth=0.5, linestyle='--')
 
         plt.gca().set_ylim(yl)
+
+        return mesh
