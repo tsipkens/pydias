@@ -818,7 +818,14 @@ def get_setpoint0(prop, *args):
     else:
         raise ValueError('Invalid setpoint parameters specified.')
     
-    # if sp['Rm'] == []:  # If resolution is not specified
+    if sp['Rm'] == []:  # If resolution is not specified
+        # Quick version.
+        Bmax = autils.mp2dm(sp['m_star'], prop)
+        sp['Rm'] = 2 * np.pi * prop['rc'] ** 2 * sp['omega'] ** 2 * Bmax * prop['L'] / prop['Q']
+        for ii in range(3):  # iterate to get closer
+            Bmax = autils.mp2dm(sp['m_star'] * (1 + 1/sp['Rm']), prop)
+            sp['Rm'] = 2 * np.pi * prop['rc'] ** 2 * sp['omega'] ** 2 * Bmax * prop['L'] / prop['Q']
+
         # sp['Rm'], sp['m_max'] = get_resolution(sp['m_star'], sp['omega'], prop)
 
     return sp, sp['m_star']
