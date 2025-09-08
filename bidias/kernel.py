@@ -4,7 +4,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 from autils import autils
-from bidias.tools import textdone
+from cmap import textdone
 from tfer import tfer
 
 def check_type(type, str):
@@ -16,6 +16,22 @@ def check_type(type, str):
         return type.index(str)
     else:
         return None
+
+
+def expand_sp(sp0, grid_b, prop_pma, dim=0):
+    """
+    Expands a setpoint structure for a provided grid.
+    """
+    # Initialize vector.
+    omega = np.zeros_like(grid_b.elements[:,dim])
+    v = np.zeros_like(grid_b.elements[:,dim])
+
+    # Loop through setpoints and compare to masses in grid.
+    for ii in range(len(sp0)):
+        mask = grid_b.elements[:,dim] == sp0[ii]['m_star'] * 1e18
+        omega[mask] = sp0[ii]['omega']
+        v[mask] = sp0[ii]['V']
+    return tfer.get_setpoint(prop_pma, 'V', v, 'omega', omega)[0]  # recompile into new setpoint list
 
 
 def build(grid_i, spec, z=None, grid_b=None, type=None):
@@ -58,8 +74,18 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             if spec[ii][0] == 'pma':
                 prop_p = spec[ii][2]
         
-        if mp_idx is None:
+        if mp_idx is None and dm_idx is None:
+            da = grid_i.elements[:, da_idx]
+            dm = autils.da_rhoeff2dm(da * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
+            m = (np.pi/6) * 1e+3 * \
+                grid_i.elements[:, da_idx] ** 3 * 1e-9
+        
+        elif mp_idx is None:
             m = (np.pi/6) * grid_i.elements[:, rho_idx] * \
+                grid_i.elements[:, dm_idx] ** 3 * 1e-9
+        
+        if da_idx is None:
+            da = (np.pi/6) * grid_i.elements[:, rho_idx] * \
                 grid_i.elements[:, dm_idx] ** 3 * 1e-9
 
     elif mp_idx is not None:
@@ -81,6 +107,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             print('Invoking mass-mobility relationship to determine dm.')
             dm = autils.mp2dm(grid_i.elements[:, mp_idx] * 1e-18, prop_p) * 1e9
+
     else:  # otherwise use explicit mobility diameter dimension
         dm = grid_i.elements[:, dm_idx]
 
