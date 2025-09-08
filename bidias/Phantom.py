@@ -10,7 +10,7 @@ import bidias.tools as tools
 import warnings
 
 class Phantom:
-    def __init__(self, spec, mu=None, Sig=None, w=None, prop=None):
+    def __init__(self, spec='standard', mu=None, Sig=None, w=None, prop=None):
         # Default values
         self.type = spec
         self.mu = []
@@ -163,16 +163,16 @@ class Phantom:
         return Phantom('standard', T @ self.mu + c0, T @ self.Sig @ T.T)
 
         
-    def show(self):
+    def show(self, nx=70, ny=70, nc=40):
         s1 = np.sqrt(self.Sig[0,0])
         s2 = np.sqrt(self.Sig[1,1])
 
-        x, y = np.meshgrid(self.mu[0] + s1 * np.linspace(-3.5, 3.5, 70), 
-                        self.mu[1] + s2 * np.linspace(-3.5, 3.5, 70))
+        x, y = np.meshgrid(self.mu[0] + s1 * np.linspace(-3.5, 3.5, nx), 
+                        self.mu[1] + s2 * np.linspace(-3.5, 3.5, ny))
         pos = np.dstack((x, y))
         
         plt.figure()
-        plt.contourf(10 ** x, 10 ** y, self.rv.pdf(pos), 40)
+        plt.contourf(10 ** x, 10 ** y, self.rv.pdf(pos), nc)
         plt.xscale('log')
         plt.yscale('log')
 
