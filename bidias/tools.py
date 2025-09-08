@@ -1,9 +1,7 @@
 
 import numpy as np
 
-from bidias.Grid import Grid, PartialGrid
-
-def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
+def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
     """
     Transform a distribution to a different space.
     
@@ -29,6 +27,8 @@ def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
     T : np.ndarray
         Transformation matrix.
     """
+
+    from bidias.Grid import Grid
     
     if fun is None:
         fun = get_transform('mp2rho')[0]
@@ -124,13 +124,3 @@ def get_transform(spec:str):
         fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
 
     return fun, T, c0
-
-
-def textdone(lineend=''):
-    print('\033[32m' + ' < DONE!' + '\033[0m' + lineend)
-
-def textblue(txt):
-    """
-    Print blue text (for headings).
-    """
-    print('\r' + '\033[36m' + txt + '\033[0m')
