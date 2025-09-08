@@ -736,7 +736,7 @@ def get_setpoint(prop, *args):
         sp[ii] = sp_i
         m_star.append(m_star_i)
 
-    return sp, m_star
+    return sp, np.squeeze(m_star)
 
 def get_setpoint0(prop, *args):
     """
