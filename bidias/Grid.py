@@ -148,6 +148,12 @@ class Grid:
                 r[ii][1] = np.log10(r[ii][1])
         
         return np.asarray(r)
+    
+    def marginalize(self, x, axis=0):
+        """
+        Marginalize the size distribution. 
+        """
+        return np.nansum(self.reshape(self.dr()[0] * x), axis=axis)
 
     def dr(self):
         """
