@@ -1249,7 +1249,7 @@ def aac(da_star, da, prop, opts=None, *args):
         # Diffusion properties
         if opts.get('diffusion', True):
             if 'm0' not in prop:
-                print('Warning: Mass-mobility information not given for AAC transfer function. Assuming dm = da.')
+                print('Warning: Mass-mobility information not given for AAC transfer function. Assuming dm = da for diffusion.')
                 dm = da  # assume dm = da
             else:
                 dm = autils.dm2da(da, prop)

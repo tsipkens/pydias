@@ -83,10 +83,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         elif mp_idx is None:
             m = (np.pi/6) * grid_i.elements[:, rho_idx] * \
                 grid_i.elements[:, dm_idx] ** 3 * 1e-9
-        
+            dm = grid_i.elements[:, dm_idx]
+            
         if da_idx is None:
-            da = (np.pi/6) * grid_i.elements[:, rho_idx] * \
-                grid_i.elements[:, dm_idx] ** 3 * 1e-9
+            da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx], f_iter=0) * 1e9
 
     elif mp_idx is not None:
         m = grid_i.elements[:, mp_idx]
@@ -121,7 +121,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     else:  # otherwise use explicit mrbc dimension
         mrbc = grid_i.elements[:, mrbc_idx]
 
-    
+    # AERODYNAMIC CHECK.
+    if da_idx is not None:
+        da = grid_i.elements[:, da_idx]
+
     # Loop over classifiers to compute Lambda
     for ii in range(nc):
         classifier = spec[ii][0]
