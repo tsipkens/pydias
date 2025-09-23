@@ -9,8 +9,6 @@ from scipy.spatial.distance import pdist, squareform
 
 import time
 
-import cvxpy as cp
-
 from cmap import textdone
 
 from bidias.Grid import PartialGrid
@@ -42,6 +40,8 @@ def lsq(A, b, method=None):
     #     x = res
 
     elif method in ['cp', 'osqp']:
+        import cvxpy as cp  # import package
+
         xc = cp.Variable(np.size(A, 1))
         objective = cp.Minimize(cp.sum_squares(A @ xc - b))
         constraints = [0 <= xc, xc <= np.inf]
