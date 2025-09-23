@@ -1253,7 +1253,7 @@ def aac(da_star, da, prop, opts=None, *args):
                 dm = da  # assume dm = da
             else:
                 dm = autils.dm2da(da, prop)
-            B, _ = autils.dm2zp(dm, None, prop['T'], prop['p'])  # compute mobility
+            B, _ = autils.dm2zp(dm, 0, prop['T'], prop['p'])  # compute mobility
             
             kB = 1.3806488e-23  # Boltzmann's constant
             D = kB * prop['T'] * B  # diffusion coefficient
