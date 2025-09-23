@@ -58,3 +58,73 @@ def read_cp2(fn1, fn2):
     grid_b.type = ['mp', 'mrbc']
 
     return b, grid_b, sp, prop_pma
+
+
+def read_smps(fn):
+    """
+    Reads a TSI SMPS .txt or .csv file exported from AIM software.
+    
+    Parameters:
+        file_path (str): Path to the SMPS file.
+    
+    Returns:
+        tuple: (metadata dict, dataframe with size distribution)
+    """
+    with open(fn, 'r', encoding='cp1252') as f:
+        lines = f.readlines()
+
+    # Identify relevant metadata.
+    prop = {}
+    def parse_meta(input_str):
+        return np.array([float(input_str.split('\t', 1)[1].replace('\n', ''))])
+    def parse_flows(input_str):
+        Q = line.split('\t')
+        Q[-1].replace('\n', '')  # remove trailing line break
+        Q = Q[1:]  # remove text label
+        Q = np.array(Q, dtype=float)  # convert to array of floats
+        if np.all(Q == Q[0]):
+            Q = np.array([Q[0]])
+        return Q
+    
+    for ii, line in enumerate(lines):
+        if "Inner Radius" in line:
+            prop['R1'] = parse_meta(line) / 100  # plus, convert from cm to m
+        elif "Outer Radius" in line:
+            prop['R2'] = parse_meta(line) / 100
+        elif "Length" in line:
+            prop['L'] = parse_meta(line) / 100
+        elif "Classifier Model" in line:
+            prop['model'] = line.split('\t', 1)[1].replace('\n', '')
+        elif "Reference Gas Temperature" in line:
+            prop['T'] = parse_meta(line)
+        elif "Reference Gas Pressure" in line:
+            prop['p'] = parse_meta(line) / 101.3
+        elif "Sheath Flow" in line:
+            prop['Qc'] = parse_flows(line) / 60000  # plus, convert from lpm to m3/s
+            prop['Qm'] = prop['Qc']  # assume equal flow
+        elif "Aerosol Flow" in line:
+            prop['Qa'] = parse_flows(line) / 60000  # aerosol flow
+            prop['Qs'] = prop['Qa']  # assume equal flow (sample flow)
+
+    # Identify start of data.
+    data_start = 0
+    for ii, line in enumerate(lines):
+        if "Diameter" in line:
+            data_start = ii
+            break
+
+    # Identify end of data.
+    data_end = 0
+    for ii, line in enumerate(lines):
+        if "Scan" in line:
+            data_end = ii
+            break
+
+    # Number of rows occupied by data.
+    n_data_rows = data_end - data_start - 1
+
+    # Read numerical data into DataFrame
+    df = pd.read_csv(fn, skiprows=data_start+1, nrows=n_data_rows, encoding='cp1252', sep='\t', header=None)
+    data = np.asarray(df.loc[:,1:])
+    dm = np.asarray(df.loc[:,0])
+    return data, dm, prop
