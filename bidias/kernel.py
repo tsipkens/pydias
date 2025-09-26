@@ -86,7 +86,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             dm = grid_i.elements[:, dm_idx]
             
         if da_idx is None:
-            da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx], f_iter=0) * 1e9
+            da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
 
     elif mp_idx is not None:
         m = grid_i.elements[:, mp_idx]
