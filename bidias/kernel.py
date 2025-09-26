@@ -159,7 +159,9 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         elif classifier == 'pma':
             print('Computing PMA contribution ...', end="", flush=True)
 
-            sp = tfer.unpack(spec[ii][1])
+            sp = spec[ii][1]
+            if isinstance(sp, list):
+                sp = tfer.unpack(sp)
 
             # Use voltage and angular speed to find unique setpoints.
             # This speeds up computation.

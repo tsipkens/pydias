@@ -9,7 +9,7 @@ from scipy.sparse import csr_matrix
 import os
 from tqdm import tqdm
 
-import tabulate # used to show lists of dictionaries (e.g., for setpoint info)
+from tabulate import tabulate # used to show lists of dictionaries (e.g., for setpoint info)
 
 from autils import autils, props
 
@@ -49,7 +49,7 @@ def show(s):
 
     header = s[0].keys()
     rows = [si.values() for si in s]
-    print(tabulate.tabulate(rows, header))
+    print(tabulate(rows, header))
 
 
 def shape_inputs(s, s_star=None, z=None):
@@ -686,6 +686,202 @@ def pma(sp, m, d, z=None, prop=None, opt=None):
     return Lambda_i, prop
 
 
+
+class Setpoint:
+    e = 1.60218e-19  # elementary charge [C]
+
+    def __init__(self, prop, **kwargs):
+        """
+        Single setpoint.
+
+        Parameters
+        ----------
+        prop : dict
+            Analyzer properties (geometry, Q, L, T, p, etc.).
+        kwargs : dict
+            Setpoint parameters. Possible keys:
+                - m_star : float, mass in kg
+                - Rm     : float, resolution
+                - omega1 : float, angular speed of inner electrode
+                - omega  : float, angular speed at rc
+                - V      : float, voltage
+        """
+
+        # Collect all non-None kwargs and match sizes.
+        # This allows inputs to be different sizes.
+        not_none_args = {k: np.atleast_1d(v) for k, v in kwargs.items() if v is not None}
+        target_len = max(arg.size for arg in not_none_args.values())
+        for key, arg in not_none_args.items():  # broadcast scalars or shorter arrays to target_len
+            if arg.size != target_len:
+                kwargs[key] = np.broadcast_to(arg, target_len)
+
+        # Copy arguments into class.
+        self.arg_list = ['m_star', 'V', 'omega1', 'omega', 'Rm']
+        for arg in self.arg_list:
+            setattr(self, arg, kwargs.get(arg))
+
+        self.prop = prop
+
+        # Derived quantities (to be filled)
+        self.alpha = None
+        self.beta  = None
+        self.omega2 = None
+        self.m_max  = None
+
+        self._solve()  # compute missing parameters
+
+    # --- dictionary-like interface ---
+    def __getitem__(self, key):
+        if hasattr(self, key):
+            return np.expand_dims(getattr(self, key), 1)
+        raise KeyError(f"Key '{key}' not found.")
+
+    def __setitem__(self, key, value):
+        if hasattr(self, key):
+            setattr(self, key, value)
+            self._solve()  # recompute derived quantities if updated
+        else:
+            raise KeyError(f"Key '{key}' not found.")
+
+    def __iter__(self):
+        return iter(self.as_dict())
+
+    def __len__(self):
+        return len(self.as_dict())    
+    
+    # --- convenience ---
+    def as_dict(self):
+        return {
+            "m_star": self.m_star, "V": self.V, "Rm": self.Rm,
+            "omega": self.omega, "omega1": self.omega1, "omega2": self.omega2,
+            "alpha": self.alpha, "beta": self.beta, "m_max": self.m_max
+        }
+    
+    def __repr__(self):
+        cols = np.vstack([getattr(self, arg) for arg in self.arg_list]).T
+
+        cols[:,0] = cols[:,0] * 1e18  # convert to fg
+
+        rows = [row for row in cols]
+        return tabulate(rows, headers=self.arg_list)
+
+    # --- computation logic ---
+    def _solve(self):
+        # Create local copies of variables.
+        p = self.prop
+        e = self.e
+
+        # Case 1: m_star not given, infer from V + omega
+        if self.m_star is None:
+            if self.omega1 is None:
+                self.omega1 = self.omega / (
+                    (p['r_hat']**2 - p['omega_hat'])/(p['r_hat']**2 - 1)
+                    + p['r1']**2*(p['omega_hat'] - 1)/((p['r_hat']**2 - 1)*p['rc']**2)
+                )
+            self.alpha = self.omega1 * (p['r_hat']**2 - p['omega_hat']) / (p['r_hat']**2 - 1)
+            self.beta  = self.omega1 * p['r1']**2 * (p['omega_hat'] - 1) / (p['r_hat']**2 - 1)
+            self.m_star = self.V / (
+                np.log(1/p['r_hat'])/e * (self.alpha*p['rc'] + self.beta/p['rc'])**2
+            )
+            self.omega  = self.alpha + self.beta/p['rc']**2
+            self.omega2 = self.alpha + self.beta/p['r2']**2
+
+        # Case 2: m_star + omega1 given
+        elif self.omega1 is not None:
+            self.alpha = self.omega1 * (p['r_hat']**2 - p['omega_hat']) / (p['r_hat']**2 - 1)
+            self.beta  = self.omega1 * p['r1']**2 * (p['omega_hat'] - 1) / (p['r_hat']**2 - 1)
+            self.V = self.m_star * np.log(1/p['r_hat'])/e * (self.alpha*p['rc'] + self.beta/p['rc'])**2
+            self.omega2 = self.alpha + self.beta/p['r2']**2
+            self.omega  = self.alpha + self.beta/p['rc']**2
+
+        # Case 3: m_star + omega given
+        elif self.omega is not None:
+            self.omega1 = self.omega / (
+                (p['r_hat']**2 - p['omega_hat'])/(p['r_hat']**2 - 1)
+                + p['r1']**2*(p['omega_hat'] - 1)/((p['r_hat']**2 - 1)*p['rc']**2)
+            )
+            self.alpha = self.omega1 * (p['r_hat']**2 - p['omega_hat']) / (p['r_hat']**2 - 1)
+            self.beta  = self.omega1 * p['r1']**2 * (p['omega_hat'] - 1) / (p['r_hat']**2 - 1)
+            self.V = self.m_star * np.log(1/p['r_hat'])/e * (self.alpha*p['rc'] + self.beta/p['rc'])**2
+            self.omega2 = self.alpha + self.beta/p['r2']**2
+
+        # Case 4: m_star + V given
+        elif self.V is not None:
+            v_theta_rc = np.sqrt(self.V*e / (self.m_star*np.log(1/p['r_hat'])))
+            A = (p['rc']*(p['r_hat']**2 - p['omega_hat'])/(p['r_hat']**2 - 1)
+                 + 1/p['rc'] * (p['r1']**2*(p['omega_hat']-1)/(p['r_hat']**2 - 1)))
+            self.omega1 = v_theta_rc / A
+            self.alpha = self.omega1 * (p['r_hat']**2 - p['omega_hat']) / (p['r_hat']**2 - 1)
+            self.beta  = self.omega1 * p['r1']**2 * (p['omega_hat'] - 1) / (p['r_hat']**2 - 1)
+            self.omega2 = self.alpha + self.beta/p['r2']**2
+            self.omega  = self.alpha + self.beta/p['rc']**2
+
+        # Case 5: m_star + Rm given
+        elif self.Rm is not None:
+            n_B = get_nb(self.m_star, p)
+            B_star, _, _ = autils.mp2zp(self.m_star, p, 1, p['T'], p['p'])
+            self.m_max = self.m_star * (1/self.Rm + 1)
+            self.omega = np.sqrt(
+                p['Q'] / (self.m_star * B_star * 2*np.pi * p['rc']**2 * p['L'] *
+                          ((self.m_max/self.m_star)**(n_B+1) - (self.m_max/self.m_star)**n_B))
+            )
+            self.omega1 = self.omega / (
+                (p['r_hat']**2 - p['omega_hat'])/(p['r_hat']**2 - 1)
+                + p['r1']**2*(p['omega_hat'] - 1)/((p['r_hat']**2 - 1)*p['rc']**2)
+            )
+            self.alpha = self.omega1 * (p['r_hat']**2 - p['omega_hat']) / (p['r_hat']**2 - 1)
+            self.beta  = self.omega1 * p['r1']**2 * (p['omega_hat'] - 1) / (p['r_hat']**2 - 1)
+            self.omega2 = self.alpha + self.beta/p['r2']**2
+            self.V = self.m_star * np.log(1/p['r_hat'])/e * (self.alpha*p['rc'] + self.beta/p['rc'])**2
+
+        else:
+            raise ValueError("Invalid setpoint parameters specified.")
+
+        # Fill Rm if missing
+        if self.Rm is None:
+            Bmax = autils.mp2dm(self.m_star, p)
+            self.Rm = 2*np.pi*p['rc']**2*self.omega**2*Bmax*p['L']/p['Q']
+            for _ in range(3):  # refine iteratively
+                Bmax = autils.mp2dm(self.m_star*(1 + 1/self.Rm), p)
+                self.Rm = 2*np.pi*p['rc']**2*self.omega**2*Bmax*p['L']/p['Q']
+        else:  # make sure Rm is a vector
+            self.Rm = np.ones_like(self.m_star) * self.Rm
+
+    # --- convenience ---
+    def as_dict(self):
+        """Return setpoint as a dictionary (for compatibility)."""
+        return {
+            "m_star": self.m_star, "V": self.V, "Rm": self.Rm,
+            "omega": self.omega, "omega1": self.omega1, "omega2": self.omega2,
+            "alpha": self.alpha, "beta": self.beta, "m_max": self.m_max
+        }
+    
+    def unique(self):
+        v, idx_star = np.unique(np.hstack((self['V'], self['omega'])), 
+                                return_inverse=True, axis=0)
+        sp = Setpoint(self.prop, V=v[:,0], omega=v[:,1])
+        return sp, idx_star
+
+
+    # @classmethod
+    # def batch(cls, prop, **kwargs):
+    #     """
+    #     Create multiple setpoints at once. Values can be scalars or arrays.
+    #     Returns a list of Setpoint objects.
+    #     """
+    #     # ensure arrays
+    #     lengths = [np.atleast_1d(v).size for v in kwargs.values()]
+    #     n = max(lengths)
+    #     out = []
+    #     for i in range(n):
+    #         kw_i = {}
+    #         for k, v in kwargs.items():
+    #             v_arr = np.atleast_1d(v)
+    #             kw_i[k] = v_arr[min(i, len(v_arr)-1)]  # broadcast if scalar
+    #         out.append(cls(prop, **kw_i))
+    #     return out
+
+
 def get_setpoint(prop, *args):
     """
     Generate setpoint parameter structure from available parameters.
@@ -804,7 +1000,7 @@ def get_setpoint0(prop, *args):
 
     elif sp['Rm']:  # m_star and Rm are specified
         n_B = get_nb(sp['m_star'], prop)
-        B_star, _, _ = autils.mp2zp(sp['m_star'], 1, prop['T'], prop['p'], prop)
+        B_star, _, _ = autils.mp2zp(sp['m_star'], prop, 1, prop['T'], prop['p'])
         sp['m_max'] = sp['m_star'] * (1 / sp['Rm'] + 1)
         sp['omega'] = np.sqrt(prop['Q'] / (sp['m_star'] * B_star * 2 * np.pi * prop['rc'] ** 2 * prop['L'] *
                                           ((sp['m_max'] / sp['m_star']) ** (n_B + 1) - (sp['m_max'] / sp['m_star']) ** n_B)))
@@ -882,8 +1078,8 @@ def get_nb(m_star, prop):
     """
     m_high = m_star * 1.001
     m_low = m_star * 0.999
-    B_high, _, _ = autils.mp2zp(m_high, 1, prop['T'], prop['p'], prop)
-    B_low, _, _ = autils.mp2zp(m_low, 1, prop['T'], prop['p'], prop)
+    B_high, _, _ = autils.mp2zp(m_high, prop, 1, prop['T'], prop['p'])
+    B_low, _, _ = autils.mp2zp(m_low, prop, 1, prop['T'], prop['p'])
     n_B = np.log10(B_high / B_low) / np.log10(m_high / m_low)
     return n_B
 
