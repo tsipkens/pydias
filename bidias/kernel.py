@@ -245,7 +245,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     
     # Sum over charge states and multiply by grid area
     A = np.sum(Ac, axis=2)
-    A = A * grid_i.transpose().dr()[0]
+    A = A * grid_i.dr()[0]
     
     # Convert to sparse matrix
     # A = csr_matrix(A)

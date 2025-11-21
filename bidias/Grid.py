@@ -170,7 +170,7 @@ class Grid:
             dr_0[ii] = self.nodes_tr[ii][1:] - self.nodes_tr[ii][:-1]
 
         # Create grid of differential values using ndgrid equivalent (meshgrid in numpy)
-        dr1, dr2 = np.meshgrid(dr_0[0], dr_0[1], indexing='ij')
+        dr2, dr1 = np.meshgrid(dr_0[1], dr_0[0], indexing='ij')
         
         # Ensure positive differential areas in case of reversed edges
         dr1 = np.abs(dr1)
@@ -528,6 +528,9 @@ class PartialGrid(Grid):
         if np.shape(self.r)[0] == 1:  # if only one line, add second at -np.inf
             r = np.vstack((self.r, [[self.r[0][0],-np.inf]]))
             slope = np.concatenate((self.slope, [1]))
+        else:
+            r = self.r
+            slope = self.slope
 
         grid = PartialGrid(edges=[self.edges[1], self.edges[0]], discrete=np.flip(self.discrete), 
                            r=np.flip(np.flip(r, axis=1), axis=0), slope=[1/sl for sl in slope])
