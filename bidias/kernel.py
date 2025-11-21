@@ -38,7 +38,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     """
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
-
+    
     print('\r' + '\033[36m' + '[ BUILDING KERNEL ]' + '\033[0m')
 
     #== Parse inputs =================================#
@@ -134,8 +134,13 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             
             d, idx = np.unique(dm, return_inverse=True)
 
-            f_z, _, _ = tfer.charger(d, z)
+            f_z, _, _ = tfer.charger(d, z, *spec[ii][1:])
             f_z = np.expand_dims(f_z, 0)
+            
+            # if nc > 1:
+            #     size = np.size(Lambda[0], 0)  # extract data length from previous Lambda entry
+            # else:
+            #     size = 1
             
             Lambda[ii] = np.repeat(f_z, np.size(Lambda[0], 0), axis=0)
 
@@ -236,11 +241,11 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     print("Compiling kernel ...", end="", flush=True)
     Ac = Lambda[0]
     for ii in range(1, nc):
-        Ac = Ac * Lambda[ii]
+        Ac *= Lambda[ii]
     
     # Sum over charge states and multiply by grid area
     A = np.sum(Ac, axis=2)
-    A = A * grid_i.dr()[0]
+    A *= grid_i.transpose().dr()[0]
     
     # Convert to sparse matrix
     # A = csr_matrix(A)
@@ -250,6 +255,29 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     print('\r' + '\033[36m' + '[ COMPLETE! ]' + '\033[0m' + '\n\n')
     
     return A, Ac
+
+
+def build_charge(grid_i, prop_dma=None, grid_b=None):
+
+    z = grid_i.edges[check_type(grid_i.type, 'z')]
+    d1 = grid_b.elements[:, check_type(grid_b.type, 'dstar1')]
+    d2 = grid_b.elements[:, check_type(grid_b.type, 'dstar2')]
+
+    # -- First classifier --
+    A1, _ = build(grid_i, [['dma', d1, prop_dma], ['charger']], z)
+
+    # -- Second classifier --
+    _, A2c = build(grid_i, [['dma', d2, prop_dma]], z)
+
+    A2d = np.zeros(A2c.shape[:2])
+
+    for ii in range(A2c.shape[1]):
+        idx = grid_i.elements[ii, 1]
+        A2d[:, ii] = A2c[:, ii, int(idx)-1]
+
+    A = A1 * A2d
+
+    return A
 
 
 def gen_smps_t(d_star, t_star, d, t, z=None, argin_dma=None, argin_z=None):
