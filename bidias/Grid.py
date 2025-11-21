@@ -523,3 +523,19 @@ class PartialGrid(Grid):
         plt.gca().set_ylim(yl)
 
         return mesh
+    
+    def transpose(self, x=None):
+        if np.shape(self.r)[0] == 1:  # if only one line, add second at -np.inf
+            r = np.vstack((self.r, [[self.r[0][0],-np.inf]]))
+            slope = np.concatenate((self.slope, [1]))
+
+        grid = PartialGrid(edges=[self.edges[1], self.edges[0]], discrete=np.flip(self.discrete), 
+                           r=np.flip(np.flip(r, axis=1), axis=0), slope=[1/sl for sl in slope])
+        if not self.type == None:
+            grid.type = [self.type[1], self.type[0]]
+
+        if np.any(x == None):
+            return grid
+        else:
+            x = grid.full2partial((self.reshape(x).T).ravel())
+            return grid, x

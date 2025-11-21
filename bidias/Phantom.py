@@ -9,66 +9,100 @@ import bidias.tools as tools
 
 import warnings
 
+
+class Phantoms:
+    """
+    Wraps Phantom to handle cases of multiple modes. 
+    """
+    def __init__(self, spec=None, mu=None, Sig=None, p=None, massmob=None, w=None):
+        # Determine source and argument type
+        if mu is not None and Sig is not None:
+            self.nmodes = len(mu)
+            self.modes = [Phantom(mu=mu[i], Sig=Sig[i]) for i in range(self.nmodes)]
+        elif p is not None:
+            self.nmodes = len(p)
+            self.modes = [Phantom(p=p[i]) for i in range(self.nmodes)]
+        elif massmob is not None:
+            self.nmodes = len(massmob)
+            self.modes = [Phantom(massmob=massmob[i]) for i in range(self.nmodes)]
+        else:
+            raise ValueError("Phantoms could not be created. Insufficient inputs!")
+
+        # Initialize weights
+        self.w = w if w is not None else np.ones(self.nmodes) / self.nmodes
+    
+    def eval(self, *args, **kwargs):
+        return sum(weight * mode.eval(*args, **kwargs) for weight, mode in zip(self.w, self.modes))
+    
+    def show(self, nx=70, ny=70, nc=40):
+        """
+        Quick plot of the combined Phantoms modes with weights,
+        reusing each Phantom's show logic.
+        """
+        # Determine combined plotting range
+        s1_list = [np.sqrt(mode.Sig[0,0]) for mode in self.modes]
+        s2_list = [np.sqrt(mode.Sig[1,1]) for mode in self.modes]
+        mu1_list = [mode.mu[0] for mode in self.modes]
+        mu2_list = [mode.mu[1] for mode in self.modes]
+
+        x = np.linspace(min(mu1 - 3*s1 for mu1, s1 in zip(mu1_list, s1_list)),
+                        max(mu1 + 3*s1 for mu1, s1 in zip(mu1_list, s1_list)), nx)
+        y = np.linspace(min(mu2 - 3*s2 for mu2, s2 in zip(mu2_list, s2_list)),
+                        max(mu2 + 3*s2 for mu2, s2 in zip(mu2_list, s2_list)), ny)
+        X, Y = np.meshgrid(x, y)
+        pos = np.dstack((X, Y))
+
+        # Use each Phantom's PDF instead of duplicating logic
+        Z = sum(w * mode.rv.pdf(pos) for w, mode in zip(self.w, self.modes))
+
+        plt.figure()
+        plt.contourf(10**X, 10**Y, Z, nc)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.gca().set_box_aspect(1)
+
+
 class Phantom:
-    def __init__(self, spec=None, mu=None, Sig=None, w=None, p=None, massmob=None):
+    def __init__(self, spec=None, mu=None, Sig=None, p=None, massmob=None):
         # Default values
         self.type = spec
         self.mu = []
         self.Sig = []
         self.R = []
 
-        self.w = w
-
         self.p = {}
         self.massmob = {}
-
-        self.nmodes = 0 # number of modes
+        
         self.rv = None
 
-        if not mu is None and not Sig is None:
+        # -- Determine input type --
+        if not mu is None and not Sig is None:  # direct mu + Sig input
             self.mu = np.asarray(mu)
             self.Sig = np.asarray(Sig)
 
-        elif not p is None:
+        elif not p is None:  # dictionary of means and GSDs input
             [self.mu, self.Sig] = self.p2mu_sig(**p)
 
-        elif not massmob is None:
-            self.mu = np.asarray([np.log10(massmob['dg']), np.log10(massmob['mg'])])
+        elif not massmob is None:  # dictionary of mass-mobility parameters
+            # Mapping of old keys → new keys
+            rename_map = {
+                'dg': 'mu1', 'mg': 'mu2',
+                'sd': 's1', 'sm': 's2',
+                'sm_d': 's2|1', 'sm|d': 's2|1', 
+                'Dm': 'pow', 'zet': 'pow', 
+            }
 
-            # Requires 'sd'!
-            Sig = np.array([[0.,0.],[0.,0.]])
-            Sig[0,0] = np.log10(massmob['sd']) ** 2
+            # Create a new dictionary with renamed keys if they exist
+            p = {rename_map.get(k, k): v for k, v in massmob.items()}
 
-            # Then pick various options for specifying other distribution widths.
-            if 'sm' in massmob.keys():
-                Sig[1,1] = np.log10(massmob['sm']) ** 2
+            # Now build analogous to above. 
+            [self.mu, Sig] = self.p2mu_sig(**p)
 
-                if 'R12' in massmob.keys():  # OPTION 1: use (sm, R12)
-                    Sig[0,1] = np.sqrt(Sig[0,0] * Sig[1,1]) * massmob['R12']
-
-                elif 'zet' in massmob.keys():  # OPTION 2: use (sm, zet)
-                    Sig[0,1] = Sig[0,0] * massmob['zet']
-
-                Sig[1,0] = Sig[0,1]
-
-            else:  # then requires 'zet'
-                Sig[0,1] = Sig[0,0] * massmob['zet']
-
-                if 'sm_d' in massmob.keys():  # OPTION 3: use (zet, sm_d)
-                    R12 = 1 / np.sqrt(1 + np.log10(massmob['sm_d']) ** 2 / (Sig[0,0] * massmob['zet'] ** 2))
-
-                elif 'R12' in massmob.keys():  # OPTION 4: use (zet, R12)
-                    R12 = massmob['R12']
-                
-                Sig[1,1] = (Sig[0,1] / R12) ** 2 / Sig[0,0]
-            
-            Sig[1,0] = Sig[0,1]
-
+            # Perform check of covariance.
             if np.abs(self.cov2corr(Sig)[0,1]) > 1:
                 warnings.warn('Warning: Phantom correlation exceeded unity. Adjusted to R12 = 1.')
                 Sig[0,1] = 1
                 Sig[1,0] = 1
-
             self.Sig = Sig
 
         else:
@@ -104,7 +138,7 @@ class Phantom:
         Convert a dictionary of properties in p dictionary in log10 mean and covariance. 
         """
         # log10 the relevant fields. 
-        fields = ['mu1', 'mu2', 's1', 's2']
+        fields = ['mu1', 'mu2', 's1', 's2', 's2|1']
         for field in fields:
             if field in p:
                 p[field] = np.log10(p[field])
@@ -112,6 +146,9 @@ class Phantom:
         # Check if pow instead of one of the standard deviations. 
         # Calculate the missing standard deviation.
         if 'pow'  in p:
+            if 's2|1' in p and not 'R12' in p:
+                p['R12'] = 1 / np.sqrt(1 + (p['s2|1'] / (p['s1'] * p['pow']))**2)
+                
             if not 's1' in p:
                 p['s1'] = p['s2'] * p['R12'] / p['pow']
             elif not 's2' in p:
@@ -186,25 +223,30 @@ class Phantom:
 
         
     def show(self, nx=70, ny=70, nc=40):
-        s1 = np.sqrt(self.Sig[0,0])
-        s2 = np.sqrt(self.Sig[1,1])
-
-        x, y = np.meshgrid(self.mu[0] + s1 * np.linspace(-3.5, 3.5, nx), 
-                        self.mu[1] + s2 * np.linspace(-3.5, 3.5, ny))
-        pos = np.dstack((x, y))
+        """
+        Generate a quick plot of the phantom.
+        """
+        s1, s2 = np.sqrt(self.Sig[0,0]), np.sqrt(self.Sig[1,1])
+        x = np.linspace(self.mu[0] - 3*s1, self.mu[0] + 3*s1, nx)
+        y = np.linspace(self.mu[1] - 3*s2, self.mu[1] + 3*s2, ny)
+        X, Y = np.meshgrid(x, y)
+        pos = np.dstack((X, Y))
         
         plt.figure()
-        plt.contourf(10 ** x, 10 ** y, self.rv.pdf(pos), nc)
+        plt.contourf(10**X, 10**Y, self.rv.pdf(pos), nc)
         plt.xscale('log')
         plt.yscale('log')
+        plt.gca().set_box_aspect(1)
 
     
-    def eval(self, grid=None, v=None):
-
+    def eval(self, grid=None, elements=None):
+        """
+        Evaluate the Phantom on a given grid or set of elements. 
+        """
         if not grid == None:
-            v = np.log10(grid.elements)
+            elements = np.log10(grid.elements)
 
-        pos = np.dstack((v[:,0], v[:,1]))
+        pos = np.dstack((elements[:,0], elements[:,1]))
         return self.rv.pdf(pos)
 
     def transpose(self):
@@ -216,15 +258,15 @@ class Phantom:
     def __str__(self):
 
         # Size of output. 
-        size = 13
-        w = size * 3
+        h = 13
+        w = h * 3  # width
 
         # Header
         out = "———— \033[1mPHANTOM\033[0m " + "—" * (w - 12) + "\n"
 
         # Compact parameter block (two clean lines)
         keys = list(self.p.keys())
-        vals = [f"{self.p[k]:.5g}" for k in keys]
+        vals = [f"{self.p[k]:.4g}" for k in keys]
 
         # Split into roughly half
         mid = len(keys) // 2 + 1
@@ -235,21 +277,30 @@ class Phantom:
         out += left + "\n"
         out += right + "\n"
 
-        # ASCII representation of a Bivariate Normal
+        # Generate ASCII version of the Phantom. 
+        out += self.show_ascii(self.R, h, w)
+
+        return out
+    
+    @staticmethod
+    def show_ascii(R, h, w):
+        """
+        Generate an ASCII representation of the Phantom using the correlation matrix.
+        """
         chars = " .:-=+*#%@"
 
         # Grid
         x_range = np.linspace(-3, 3, w)
-        y_range = np.linspace(-3, 3, size)
+        y_range = np.linspace(-3, 3, h)
 
         # Middle border
-        out += "╭" + "—" * w + "╮\n"
+        out = "╭" + "—" * w + "╮\n"
 
         for y in y_range:
             line = ""
             for x in x_range:
-                # Bivariate exponent (correlation ellipse)
-                term = (x**2 - 2*self.R[0,1]*x*y + y**2) / (1 - self.R[0,1]**2)
+                # Bivariate exponent (correlation ellipse).
+                term = (x**2 - 2*R[0,1]*x*y + y**2) / (1 - R[0,1]**2)
                 density = np.exp(-0.5 * term)
 
                 char_idx = int(density * (len(chars) - 1))
@@ -354,5 +405,55 @@ def fit(elements, f):
     )
     
     pha = Phantom('standard', *get_cov(*res.x[:-1]))
+
+    return pha
+
+
+def fit_gmm(x, edges, n=1):
+    """
+    Fit to the data by sampling and fitting a Gaussian mixture model.
+    """
+
+    # Import GMM package and related on demand. 
+    from sklearn.mixture import GaussianMixture
+    from sklearn.preprocessing import StandardScaler
+
+    # ----------------------------------------------------
+    # 1. Sample points from the discretized PDF
+    # ----------------------------------------------------
+    flat_pdf = x / x.sum()  # normalize to ensure it's a proper PDF
+    cdf = np.cumsum(flat_pdf)  # get cdf
+    
+    N = 20000 # number of samples
+
+    # Draw uniform random values in [0,1]
+    u = np.random.rand(N)
+
+    # Find grid-cell indices corresponding to sampled CDF positions
+    idx = np.searchsorted(cdf, u)
+
+    # Convert 1D indices → 2D grid coordinates
+    iy, ix = np.divmod(idx, len(edges[0]))
+    samples = np.column_stack((np.log10(edges[0])[ix], np.log10(edges[1])[iy]))
+
+    scaler = StandardScaler()
+    samples = scaler.fit_transform(samples)
+
+    # ----------------------------------------------------
+    # 2. Fit a Gaussian Mixture Model (GMM)
+    # ----------------------------------------------------
+    gmm = GaussianMixture(
+        n_components=2,
+        covariance_type='full',
+        n_init=10,           # multiple initializations for robustness
+        max_iter=500,
+        random_state=42
+    )
+    gmm.fit(samples)
+
+    if n == 1:
+        pha = Phantom(mu=gmm.means_[0], Sig=gmm.covariances_[0])
+    else:
+        pha = Phantoms(mu=gmm.means_, Sig=gmm.covariances_, w=gmm.weights_)
 
     return pha
