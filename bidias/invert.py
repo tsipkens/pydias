@@ -354,11 +354,23 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None):
     Gpr = np.exp(-D)
 
     Gpr_inv = np.linalg.pinv(Gpr)
-    Gpr_inv[Gpr_inv < 0.01 * np.max(Gpr_inv)] = 0  # zero very small values
+    # Gpr_inv[Gpr_inv < 0.01 * np.max(Gpr_inv)] = 0  # zero very small values
 
     Lpr = cholesky(Gpr_inv, lower=False)
 
+    Lpr[D > 1.75] = 0  # zero values where distances are large
+
     return Lpr, D, Gpr
+
+def get_Gd(gsd1, gsd2, R=0.95):
+    """
+    Build covariance matrix from two correlation lengths (given as GSDs) and a correlation.
+    """
+    lengths = np.array([np.log10(gsd1), np.log10(gsd2)])  # correlation lengths, i.e., standard deviations
+    Gd = np.diag(lengths) ** 2
+    Gd[1,0] = R * np.prod(lengths)
+    Gd[0,1] = Gd[1,0]
+    return Gd
 
 def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None, grid=None):
 
