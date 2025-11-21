@@ -241,11 +241,11 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     print("Compiling kernel ...", end="", flush=True)
     Ac = Lambda[0]
     for ii in range(1, nc):
-        Ac *= Lambda[ii]
+        Ac = Ac * Lambda[ii]  # cannot use *= as dimensions may change
     
     # Sum over charge states and multiply by grid area
     A = np.sum(Ac, axis=2)
-    A *= grid_i.transpose().dr()[0]
+    A = A * grid_i.transpose().dr()[0]
     
     # Convert to sparse matrix
     # A = csr_matrix(A)
