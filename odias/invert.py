@@ -2,7 +2,7 @@
 import numpy as np
 
 from scipy.sparse import eye, diags, vstack, csr_matrix
-from scipy.optimize import lsq_linear, nnls
+from scipy.optimize import lsq_linear, nnls, least_squares
 from scipy.interpolate import interp1d
 
 import cvxpy as cp
@@ -304,6 +304,56 @@ def tikhonov(A, b, lam, order=1, bc=None, xi=None, method=None, Lpr0=None):
         return x, D, Lpr0, Gpo_inv
 
     return x, (A_aug, b_aug), D, Lpr0
+
+
+def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
+    """
+    Python version of MATLAB tikhonov_op
+    
+    Parameters
+    ----------
+    A : ndarray
+        Model matrix
+    b : ndarray
+        Data vector
+    x0 : ndarray
+        True or reference solution for optimal lambda search
+    lam0 : float, optional
+        Initial lambda guess
+
+    Returns
+    -------
+    x : ndarray
+        Regularized solution
+    lambda_opt : float
+        Optimized lambda
+    Lpr : ndarray
+        Prior covariance or related output (as returned by tikhonov)
+    Gpo_inv : ndarray
+        Posterior inverse covariance matrix
+    """
+
+    # Define cost function used for nonlinear optimization
+    def min_fun(log10lam):
+        lam = 10 ** log10lam[0]
+        x_est, *_ = tikhonov(A, b, lam, **kwargs)
+        return (x0 - x_est)
+
+    # Initial guess in log10 space
+    lam1 = np.log10(lam0)
+
+    # Optimization (MATLAB's lsqnonlin → SciPy's least_squares)
+    res = least_squares(min_fun, x0=np.array([lam1]), 
+                        verbose=0,
+                        max_nfev=15,
+                        diff_step=0.05)
+
+    lambda_opt = 10 ** res.x[0]
+
+    # Final solution using optimal lambda
+    x, _, Lpr, _ = tikhonov(A, b, lambda_opt, **kwargs)
+
+    return x, lambda_opt, Lpr, None
 
 
 def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
