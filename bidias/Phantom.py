@@ -126,9 +126,9 @@ class Phantom:
             "mu2": 10**mu[1],
             "s1": 10**np.sqrt(Sig[0, 0]),
             "s2": 10**np.sqrt(Sig[1, 1]),
+            "s2|1": 10**np.sqrt(Sig[1, 1] * (1 - R12**2)),
             "pow": Sig[0, 1] / Sig[0, 0],
             "R12": R12,
-            "s2|1": 10**np.sqrt(Sig[1, 1] * (1 - R12**2)),
         }
 
         return p
@@ -261,24 +261,27 @@ class Phantom:
     def __str__(self):
 
         # Size of output. 
-        h = 13
+        h = 10
         w = h * 3  # width
 
         # Header
-        out = "———— \033[1mPHANTOM\033[0m " + "—" * (w - 12) + "\n"
+        out = "—" * (int(w/2) - 4) + " \033[1mPHANTOM\033[0m " + "—" * (int(w/2) - 4) + "\n"
 
         # Compact parameter block (two clean lines)
         keys = list(self.p.keys())
         vals = [f"{self.p[k]:.4g}" for k in keys]
 
         # Split into roughly half
-        mid = len(keys) // 2 + 1
+        mid1 = 2
+        mid2 = 5
 
-        left  = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[:mid], vals[:mid]))
-        right = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[mid:], vals[mid:]))
+        row1  = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[:mid1], vals[:mid1]))
+        row2 = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[mid1:mid2], vals[mid1:mid2]))
+        row3 = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[mid2:], vals[mid2:]))
 
-        out += left + "\n"
-        out += right + "\n"
+        out += row1 + "\n"
+        out += row2 + "\n"
+        out += row3 + "\n"
 
         # Generate ASCII version of the Phantom. 
         out += self.show_ascii(self.R, h, w)
