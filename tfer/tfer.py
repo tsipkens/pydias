@@ -724,6 +724,10 @@ class Setpoint(autils.ComputedProperties):
 
         self._solve()  # compute missing parameters
 
+    # --- override __getitem__ to add dim ---
+    def __getitem__(self, key):
+        return np.expand_dims(super().__getitem__(key), 1)
+
     # --- computation logic ---
     def _solve(self):
         # Create local copies of variables.
@@ -899,6 +903,7 @@ def get_setpoint0(prop, *args):
     else:
         raise ValueError('Invalid setpoint parameters specified.')
     
+    """
     if sp['Rm'] == []:  # If resolution is not specified
         # Quick version.
         Bmax = autils.mp2dm(sp['m_star'], prop)
@@ -908,6 +913,7 @@ def get_setpoint0(prop, *args):
             sp['Rm'] = 2 * np.pi * prop['rc'] ** 2 * sp['omega'] ** 2 * Bmax * prop['L'] / prop['Q']
 
         # sp['Rm'], sp['m_max'] = get_resolution(sp['m_star'], sp['omega'], prop)
+    """
 
     return sp, sp['m_star']
 
