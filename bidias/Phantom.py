@@ -137,17 +137,20 @@ class Phantom:
         """
         Convert a dictionary of properties in p dictionary in log10 mean and covariance. 
         """
-        # log10 the relevant fields. 
+        # Apply log10 to the relevant fields. 
         fields = ['mu1', 'mu2', 's1', 's2', 's2|1']
         for field in fields:
             if field in p:
                 p[field] = np.log10(p[field])
 
-        # Check if pow instead of one of the standard deviations. 
+        # Check if pow is used instead of one of the standard deviations. 
         # Calculate the missing standard deviation.
-        if 'pow'  in p:
+        if 'pow' in p:
             if 's2|1' in p and not 'R12' in p:
-                p['R12'] = 1 / np.sqrt(1 + (p['s2|1'] / (p['s1'] * p['pow']))**2)
+                if 's1' in p:
+                    p['R12'] = 1 / np.sqrt(1 + (p['s2|1'] / (p['s1'] * p['pow']))**2)
+                elif 's2' in p:
+                    p['R12'] = np.sqrt(1 - (p['s2|1'] / (p['s2']))**2)
                 
             if not 's1' in p:
                 p['s1'] = p['s2'] * p['R12'] / p['pow']

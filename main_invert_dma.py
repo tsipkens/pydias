@@ -2,7 +2,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Assuming the custom modules are converted to Python
 from autils import autils, props, tools
 from odias import kernel, invert
 
