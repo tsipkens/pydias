@@ -333,19 +333,19 @@ def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
         Posterior inverse covariance matrix
     """
 
-    # Define cost function used for nonlinear optimization
+    # Define cost function computing the residual. 
     def min_fun(log10lam):
         lam = 10 ** log10lam[0]
         x_est, *_ = tikhonov(A, b, lam, **kwargs)
-        return (x0 - x_est)
+        return x0 - x_est
 
-    # Initial guess in log10 space
+    # Initial guess in log10 space.
     lam1 = np.log10(lam0)
 
-    # Optimization (MATLAB's lsqnonlin → SciPy's least_squares)
+    # Optimization.
     res = least_squares(min_fun, x0=np.array([lam1]), 
                         verbose=0,
-                        max_nfev=15,
+                        max_nfev=20,
                         diff_step=0.05)
 
     lambda_opt = 10 ** res.x[0]
