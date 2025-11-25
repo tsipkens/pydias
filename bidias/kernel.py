@@ -177,7 +177,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             m = v[:,0]
             d = v[:,1]
 
-            Lambda[ii], _ = tfer.pma(sp, m, d, z, spec[ii][2], '1C')
+            Lambda[ii], _ = tfer.pma(sp, m, d, z, spec[ii][2], '1C_diff')
 
             Lambda[ii] = Lambda[ii][idx_star,:,:]
             Lambda[ii] = Lambda[ii][:,idx,:]
