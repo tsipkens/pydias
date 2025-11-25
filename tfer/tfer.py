@@ -1243,7 +1243,7 @@ def calc_d_star(tau_star, mu):
         d_star[ii] = fmin(lambda d: np.abs(autils.cc(d) * 1e3 * d ** 2 / (18 * mu) - tau_star[ii]), 100e-9)[0]
     return d_star
 
-def aac(da_star, da, prop, opts=None, *args):
+def aac(da_star, da, prop, opts=None, *args, dm=None):
     if opts is None:
         opts = {}
 
@@ -1335,7 +1335,9 @@ def aac(da_star, da, prop, opts=None, *args):
         
         # Diffusion properties
         if opts.get('diffusion', True):
-            if 'm0' not in prop:
+            if np.any(dm):
+                pass
+            elif 'm0' not in prop:
                 print('Warning: Mass-mobility information not given for AAC transfer function. Assuming dm = da for diffusion.')
                 dm = da  # assume dm = da
             else:
