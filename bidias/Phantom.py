@@ -115,13 +115,13 @@ class Phantom:
         self.p = self.mu_sig2p(self.mu, self.Sig)
         self.massmob = self.p2massmob(self.p)
 
-    def mu_sig2p(self, mu, Sig):
+    @staticmethod
+    def mu_sig2p(mu, Sig):
         """
         Convert means and covariance (in log10-space) to a p dictionary. 
         """
-
-        R12 = self.cov2corr(Sig)[0, 1]
-        p = {
+        R12 = Phantom.cov2corr(Sig)[0, 1]
+        return {
             "mu1": 10**mu[0],
             "mu2": 10**mu[1],
             "s1": 10**np.sqrt(Sig[0, 0]),
@@ -131,9 +131,8 @@ class Phantom:
             "R12": R12,
         }
 
-        return p
-
-    def p2mu_sig(self, **p):
+    @staticmethod
+    def p2mu_sig(**p):
         """
         Convert a dictionary of properties in p dictionary in log10 mean and covariance. 
         """
@@ -151,15 +150,20 @@ class Phantom:
                     p['R12'] = 1 / np.sqrt(1 + (p['s2|1'] / (p['s1'] * p['pow']))**2)
                 elif 's2' in p:
                     p['R12'] = np.sqrt(1 - (p['s2|1'] / (p['s2']))**2)
-                
-            if not 's1' in p:
+            
+            if p['pow'] == 0:
+                p['s2'] = p['s2|1']
+            elif not 's1' in p:
                 p['s1'] = p['s2'] * p['R12'] / p['pow']
             elif not 's2' in p:
                 p['s2'] = p['s1'] / p['R12'] * p['pow']
 
+        print(p)
+
         return get_cov(**p)
 
-    def p2massmob(self, p):  # extra parameters computed from standard p
+    @staticmethod
+    def p2massmob(p):  # extra parameters computed from standard p
         dg, mg = p['mu1'], p['mu2']
         sd, sm = p['s1'], p['s2']
         zet, sm_d = p['pow'], p['s2|1']
@@ -241,6 +245,10 @@ class Phantom:
         plt.yscale('log')
         plt.gca().set_box_aspect(1)
 
+    def overlay(self, *args, **kwargs):
+        """A function to bridge the general overlay for the current phantom."""
+        overlay(self.mu, self.Sig, *args, **kwargs)
+
     
     def eval(self, grid=None, elements=None):
         """
@@ -319,11 +327,13 @@ class Phantom:
 
         return out
 
-def overlay(mu, Sig, sd=2.0, **ellipse_kwargs):
+def overlay(mu, Sig, sd=2.0, **plot_kwargs):
     """
     Plot an ellipse representing the covariance matrix `Sig`
     centered at `mu`. sd = number of standard deviations.
     """
+
+    ax = plt.gca()
 
     sd = np.atleast_1d(sd)  # convert to 1D array, handles if multiple std. dev. are given
 
@@ -342,7 +352,13 @@ def overlay(mu, Sig, sd=2.0, **ellipse_kwargs):
         # Transform back to linear
         ellipse_linear = 10**ellipse_linear
 
-        plt.gca().plot(ellipse_linear[0,:], ellipse_linear[1,:], **ellipse_kwargs)
+        ax.plot(ellipse_linear[0,:], ellipse_linear[1,:], **plot_kwargs)
+    
+    pow = Phantom.mu_sig2p(mu, Sig)['pow']
+    fun = lambda x:  10 ** (pow * (np.log10(x) - mu[0]) + mu[1])
+    xvec = np.logspace(mu[0] - np.max(sd) * np.sqrt(Sig[0,0]), 
+                       mu[0] + np.max(sd) * np.sqrt(Sig[0,0]), 20)
+    ax.plot(xvec, fun(xvec), **plot_kwargs)
 
 
 def get_cov(mu1, mu2, s1, s2, R12, **kwargs):
