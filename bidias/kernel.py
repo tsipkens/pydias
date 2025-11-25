@@ -224,9 +224,12 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             print('Computing AAC contribution ....')
 
             d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
-            d, idx = np.unique(da, return_inverse=True)  # extract corresponding mobility diameters from grid
+            
+            v, idx = np.unique(np.vstack((da, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            da = v[:,0]
+            d = v[:,1]  # mobility diameter
 
-            Lambda[ii], _, _= tfer.aac(d_star, d, spec[ii][2], spec[ii][3])
+            Lambda[ii], _, _= tfer.aac(d_star, da, spec[ii][2], spec[ii][3], dm=d)
 
             Lambda[ii] = Lambda[ii][idx_star,:]
             Lambda[ii] = Lambda[ii][:,idx]
