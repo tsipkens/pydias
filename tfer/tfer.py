@@ -13,6 +13,143 @@ from tabulate import tabulate # used to show lists of dictionaries (e.g., for se
 
 from autils import autils, props
 
+
+class Setpoint(autils.ComputedProperties):
+    e = 1.60218e-19  # elementary charge [C]
+
+    def __init__(self, prop, type='pma', **kwargs):
+        """
+        Single setpoint.
+
+        Parameters
+        ----------
+        prop : dict
+            Analyzer properties (geometry, Q, L, T, p, etc.).
+        kwargs : dict
+            Setpoint parameters. Possible keys:
+                - m_star : float, mass in kg
+                - Rm     : float, resolution
+                - omega1 : float, angular speed of inner electrode
+                - omega  : float, angular speed at rc
+                - V      : float, voltage
+
+        NOTE: ComputedProperties class allows for dictionary-like access and
+        allows for updating of properties using a dictionary of functions.
+        """
+
+        # Collect all non-None kwargs and match sizes.
+        # This allows inputs to be different sizes.
+        super().__init__(**kwargs)  # use of ComputedProperties class
+        self.toignore = ['toignore', 'prop', 'type']
+
+        self.check_lengths()  # check that inputs are the same lengths
+
+        self.prop = prop
+        self.type = type
+
+        self._solve()  # compute missing parameters
+
+    # --- override __getitem__ to add dim ---
+    def __getitem__(self, key):
+        return np.expand_dims(super().__getitem__(key), 1)
+
+    # --- computation logic ---
+    def _solve(self):
+        # Create local copies of variables.
+        prop = self.prop
+        e = self.e
+
+        # ---------------------------------------------------------------- #
+        if self.type == 'pma':
+            # Special code for resolution input.
+            if not hasattr(self, 'Rm'):
+                self.Rm = None
+
+            if self.Rm is not None:
+                n_B = get_nb(self.m_star, prop)
+                B_star, _, _ = autils.mp2zp(self.m_star, prop, 1, prop['T'], prop['p'])
+                m_max = self.m_star * (1/self.Rm + 1)
+                self.omega = np.sqrt(
+                    prop['Q'] / (self.m_star * B_star * 2*np.pi * prop['rc']**2 * prop['L'] *
+                            ((m_max/self.m_star)**(n_B+1) - (m_max/self.m_star)**n_B))
+                )
+
+            # Define conversion functions.
+            funcs = {
+                'omega1': lambda omega: omega / ((prop['r_hat']**2 - prop['omega_hat'])/(prop['r_hat']**2 - 1) + 
+                                                prop['r1']**2*(prop['omega_hat'] - 1)/((prop['r_hat']**2 - 1)*prop['rc']**2)),
+                'alpha': lambda omega1: omega1 * (prop['r_hat']**2 - prop['omega_hat']) / (prop['r_hat']**2 - 1),
+                'beta': lambda omega1: omega1 * prop['r1']**2 * (prop['omega_hat'] - 1) / (prop['r_hat']**2 - 1),
+                'omega': lambda alpha, beta, r: alpha + beta/r**2, 
+                'omega2': lambda alpha, beta: alpha + beta / (prop['r2'] ** 2),
+                'V': lambda m_star, alpha, beta: m_star * np.log(1/prop['r_hat'])/e * (alpha*prop['rc'] + beta/prop['rc'])**2,
+                'm_star': lambda V, alpha, beta: V / (np.log(1/prop['r_hat'])/e * (alpha*prop['rc'] + beta/prop['rc'])**2),
+                'm_star_fg': lambda m_star: m_star * 1e18,
+            }
+
+            # --- GET MISSING VALUES ---
+            self.apply_functions(funcs)  # apply functions iteratively to fill class
+            # ---------------------------
+
+            # Fill resolution if missing
+            if self.Rm is None:
+                Bmax = autils.mp2dm(self.m_star, prop)
+                self.Rm = 2*np.pi*prop['rc']**2*self.omega**2*Bmax*prop['L']/prop['Q']
+                for _ in range(3):  # refine iteratively
+                    Bmax = autils.mp2dm(self.m_star*(1 + 1/self.Rm), prop)
+                    self.Rm = 2*np.pi*prop['rc']**2*self.omega**2*Bmax*prop['L']/prop['Q']
+            else:  # make sure Rm is a vector
+                self.Rm = np.ones_like(self.m_star) * self.Rm
+
+        # ---------------------------------------------------------------- #
+        elif self.type == 'aac':
+            # Special code for required inputs.
+            prop['del'] = (prop['Qs'] - prop['Qa']) / (prop['Qs'] + prop['Qa'])
+            prop['bet'] = (prop['Qs'] + prop['Qa']) / (prop['Qsh'] + prop['Qexh'])
+
+            if np.all(prop['del'] == prop['del'][0]):
+                prop['del'] = prop['del'][0]
+            if np.all(prop['bet'] == prop['bet'][0]):
+                prop['bet'] = prop['bet'][0]
+
+            # Compute resolution
+            prop['Rt'] = 1 / prop['bet']
+            
+            # Pre-compute other properties.
+            A = np.pi * (prop['r2'] + prop['r1'])**2 * prop['L']
+
+            T = prop['T']
+            p = prop['p']
+            mu = autils.mu(T=T, p=p)
+
+            dcc = lambda da_star: (autils.cc(da_star + 1e-12) - autils.cc(da_star - 1e-12)) / (2 * 1e-12)
+
+            # Define conversion functions.
+            funcs = {
+                'da_star': lambda tau_star: calc_d_star(tau_star, mu),
+                'tau_star': lambda da_star: autils.cc(da_star) * 1e3 * da_star**2 / (18 * mu),
+                'Qexh': lambda Qsh: Qsh,  # if not given as input, default back
+                'Qsh': lambda Qexh: Qexh,
+                'omega': lambda tau_star, Qsh, Qexh: np.sqrt((Qsh + Qexh) / (A * tau_star)),
+                'Rt': lambda Qsh, Qexh: (Qsh + Qexh) / (prop['Qs'] + prop['Qa']), 
+                'Qsh': lambda Rt: Rt * (prop['Qs'] + prop['Qa']) / 2,
+                'Rs': lambda da_star, tau_star, Rt: Rt * da_star / tau_star * (1e3 * da_star / (18 * mu) * (da_star * dcc(da_star) + 2 * autils.cc(da_star))),
+            }
+
+            # --- GET MISSING VALUES ---
+            self.apply_functions(funcs)  # apply functions iteratively to fill class
+            # ---------------------------
+
+        # ---------------------------------------------------------------- #
+        else:
+            print('Classifier not available in Setpoint.')
+            pass
+
+    def as_dict(self):
+        sp = super().as_dict()
+        return sp
+    
+
 def unpack(sp):
     """
     A function to pack a list of dictionaries describing the setpoint.
@@ -35,13 +172,12 @@ def pack(sp):
     A function to unpack a dictionary containing lists.
     The output can be visualized using tfer.show().
     """
-    spo = [{}] * len(sp)
+    n = len(next(iter(sp.values())))
+    spo = [{} for _ in range(n)]
     for key, value in sp.items():
-        for ii in range(len(sp[key])):
-            spo[ii][key] = sp[key][ii]
-    
+        for ii in range(n):
+            spo[ii][key] = value[ii]
     return spo
-
 
 def show(s):
     if type(s) == dict:
@@ -686,91 +822,6 @@ def pma(sp, m, d, z=None, prop=None, opt=None):
     return Lambda_i, prop
 
 
-class Setpoint(autils.ComputedProperties):
-    e = 1.60218e-19  # elementary charge [C]
-
-    def __init__(self, prop, **kwargs):
-        """
-        Single setpoint.
-
-        Parameters
-        ----------
-        prop : dict
-            Analyzer properties (geometry, Q, L, T, p, etc.).
-        kwargs : dict
-            Setpoint parameters. Possible keys:
-                - m_star : float, mass in kg
-                - Rm     : float, resolution
-                - omega1 : float, angular speed of inner electrode
-                - omega  : float, angular speed at rc
-                - V      : float, voltage
-
-        NOTE: ComputedProperties class allows for dictionary-like access and
-        allows for updating of properties using a dictionary of functions.
-        """
-
-        # Collect all non-None kwargs and match sizes.
-        # This allows inputs to be different sizes.
-        super().__init__(**kwargs)  # use of ComputedProperties class
-        self.check_lengths()  # check that inputs are the same lengths
-
-        self.prop = prop
-
-        # Derived quantities (to be filled)
-        self.alpha = None
-        self.beta  = None
-        self.omega2 = None
-        self.m_max  = None
-
-        self._solve()  # compute missing parameters
-
-    # --- override __getitem__ to add dim ---
-    def __getitem__(self, key):
-        return np.expand_dims(super().__getitem__(key), 1)
-
-    # --- computation logic ---
-    def _solve(self):
-        # Create local copies of variables.
-        prop = self.prop
-        e = self.e
-
-        # Special code for resolution input.
-        if self.Rm is not None:
-            n_B = get_nb(self.m_star, prop)
-            B_star, _, _ = autils.mp2zp(self.m_star, prop, 1, prop['T'], prop['p'])
-            m_max = self.m_star * (1/self.Rm + 1)
-            self.omega = np.sqrt(
-                prop['Q'] / (self.m_star * B_star * 2*np.pi * prop['rc']**2 * prop['L'] *
-                          ((m_max/self.m_star)**(n_B+1) - (m_max/self.m_star)**n_B))
-            )
-
-        # Define conversion functions.
-        funcs = {
-            'omega1': lambda omega: omega / ((prop['r_hat']**2 - prop['omega_hat'])/(prop['r_hat']**2 - 1) + 
-                                             prop['r1']**2*(prop['omega_hat'] - 1)/((prop['r_hat']**2 - 1)*prop['rc']**2)),
-            'alpha': lambda omega1: omega1 * (prop['r_hat']**2 - prop['omega_hat']) / (prop['r_hat']**2 - 1),
-            'beta': lambda omega1: omega1 * prop['r1']**2 * (prop['omega_hat'] - 1) / (prop['r_hat']**2 - 1),
-            'omega': lambda alpha, beta, r: alpha + beta/r**2, 
-            'omega2': lambda alpha, beta: alpha + beta / (prop['r2'] ** 2),
-            'V': lambda m_star, alpha, beta: m_star * np.log(1/prop['r_hat'])/e * (alpha*prop['rc'] + beta/prop['rc'])**2,
-            'm_star': lambda V, alpha, beta: V / (np.log(1/prop['r_hat'])/e * (alpha*prop['rc'] + beta/prop['rc'])**2)
-        }
-
-        # --- GET MISSING VALUES ---
-        self.apply_functions(funcs)  # apply functions iteratively to fill class
-        # ---------------------------
-
-        # Fill resolution if missing
-        if self.Rm is None:
-            Bmax = autils.mp2dm(self.m_star, p)
-            self.Rm = 2*np.pi*p['rc']**2*self.omega**2*Bmax*p['L']/p['Q']
-            for _ in range(3):  # refine iteratively
-                Bmax = autils.mp2dm(self.m_star*(1 + 1/self.Rm), p)
-                self.Rm = 2*np.pi*p['rc']**2*self.omega**2*Bmax*p['L']/p['Q']
-        else:  # make sure Rm is a vector
-            self.Rm = np.ones_like(self.m_star) * self.Rm
-
-
 def get_setpoint(prop, *args):
     """
     Generate setpoint parameter structure from available parameters.
@@ -814,7 +865,7 @@ def get_setpoint(prop, *args):
         args[3] = np.full(n, args[3])
 
     # Default empty structure
-    sp = [{}] * n
+    sp = [{} for _ in range(n)]
     m_star = []
     for ii in range(n):  # Loop through setpoints
         sp_i, m_star_i = get_setpoint0(prop, args[0], args[1][ii], args[2], args[3][ii])
@@ -1105,9 +1156,10 @@ def tfer_1C(sp, m, d, z, prop={}):
                 3 * sp['beta'] ** 2 / (prop['rc'] ** 4) + C0 / (m * (prop['rc'] ** 2)))
 
     # -- Evaluate G0 and transfer function ------------------------------------#
-    with np.errstate(over='ignore'):  # exp() occasionally overflows
-        G0 = lambda r: prop['rc'] + (r - prop['rc'] + C3 / C4) * \
-                    np.exp(-C4 * prop['L'] / prop['v_bar']) - C3 / C4
+    def G0(r):
+        with np.errstate(over='ignore'):  # exp() occasionally overflows
+            return prop['rc'] + (r - prop['rc'] + C3 / C4) * \
+                np.exp(-C4 * prop['L'] / prop['v_bar']) - C3 / C4
 
     ra = np.minimum(prop['r2'], np.maximum(prop['r1'], G0(prop['r1'])))
     rb = np.minimum(prop['r2'], np.maximum(prop['r1'], G0(prop['r2'])))
@@ -1141,9 +1193,10 @@ def tfer_1C_diff(sp, m, d, z, prop={}):
     # get G0 function for this case
 
     rho_fun = lambda G, r: (G - r) / (np.sqrt(2) * sig)  # recurring quantity
-    kap_fun = lambda G, r: \
-        (G - r) * erf(rho_fun(G, r)) + \
-        sig * np.sqrt(2 / np.pi) * np.exp(-rho_fun(G, r) ** 2)  # define function for kappa
+    def kap_fun(G, r):
+        with np.errstate(over='ignore'):  # divide occasionally overflows
+            return (G - r) * erf(rho_fun(G, r)) + \
+                    sig * np.sqrt(2 / np.pi) * np.exp(-rho_fun(G, r) ** 2)  # define function for kappa
 
     # -- Evaluate the transfer function and its terms -------------------------#
     K22 = kap_fun(G0(prop['r2']), prop['r2'])
@@ -1243,7 +1296,7 @@ def calc_d_star(tau_star, mu):
         d_star[ii] = fmin(lambda d: np.abs(autils.cc(d) * 1e3 * d ** 2 / (18 * mu) - tau_star[ii]), 100e-9)[0]
     return d_star
 
-def aac(da_star, da, prop, opts=None, *args, dm=None):
+def aac(da_star, da, prop, opts=None, dm=None, sp=None):
     if opts is None:
         opts = {}
 
@@ -1253,40 +1306,68 @@ def aac(da_star, da, prop, opts=None, *args, dm=None):
     opts.setdefault('ideal', False)
     opts.setdefault('diffusion', True)
 
-    da, da_star, _ = shape_inputs(da, da_star)
+    mu = autils.mu(prop['T'], prop['p'])  # Gas viscosity [Pa*s]
+    # mu = 1.82e-5  # Gas viscosity [Pa*s] (TO DO: update to autils function)
 
-    # Convert from nm to m for calculations
-    da = np.array(da) * 1e-9
+    # Then interpret first input as Setpoint object.
+    if not isinstance(da_star, np.ndarray):
+        sp = da_star
 
-    # Compute other classifier properties
-    prop['del'] = (prop['Qs'] - prop['Qa']) / (prop['Qs'] + prop['Qa'])
-    prop['bet'] = (prop['Qs'] + prop['Qa']) / (prop['Qsh'] + prop['Qexh'])
+    if not sp is None:
+        da = np.array(da) * 1e-9
+        da_star = sp.da_star.T
+        omega = sp.omega.T
+        tau_star = sp.tau_star.T
+        Qsh = sp.Qsh.T
+        Qexh = sp.Qexh.T
 
-    if np.all(prop['del'] == prop['del'][0]):
-        prop['del'] = prop['del'][0]
-    if np.all(prop['bet'] == prop['bet'][0]):
-        prop['bet'] = prop['bet'][0]
+        da, da_star, _ = shape_inputs(da, da_star)
+        _, omega, _ = shape_inputs(da, omega)
+        _, tau_star, _ = shape_inputs(da, tau_star)
+        _, Qsh, _ = shape_inputs(da, Qsh)
+        _, Qexh, _ = shape_inputs(da, Qexh)
 
-    # Compute resolution
-    prop['Rt'] = 1 / prop['bet']
+        # Constants
+        rc = prop['r1'] / prop['r2']  # Ratio of radii
+        tf = np.pi * prop['L'] * (prop['r2'] ** 2 - prop['r1'] ** 2) / (prop['Qa'] + Qsh)
+        gam = (prop['Qa'] + Qsh - prop['Qs'] * (1 - rc ** 2)) / (prop['Qa'] + Qsh - Qsh * (1 - rc ** 2))
 
-    # Constants
-    mu = 1.82e-5  # Gas viscosity [Pa*s]
-    rc = prop['r1'] / prop['r2']  # Ratio of radii
-    tf = np.pi * prop['L'] * (prop['r2'] ** 2 - prop['r1'] ** 2) / (prop['Qa'] + prop['Qsh'])
-    gam = (prop['Qa'] + prop['Qsh'] - prop['Qs'] * (1 - rc ** 2)) / (prop['Qa'] + prop['Qsh'] - prop['Qsh'] * (1 - rc ** 2))
+    else:
+        da, da_star, _ = shape_inputs(da, da_star)
 
-    # Interpret setpoint
-    if opts['input'] == 'd_star':  # d_star given, so compute omega
-        da_star = da_star * 1e-9  # Convert input from nm to m
-        tau_star = autils.cc(da_star) * 1e3 * da_star ** 2 / (18 * mu)
-        omega = np.sqrt((prop['Qsh'] + prop['Qexh']) / (np.pi * (prop['r2'] + prop['r1']) ** 2 * prop['L'] * tau_star))
+        # Convert from nm to m for calculations
+        da = np.array(da) * 1e-9
+        Qsh = prop['Qsh']
+        Qexh = prop['Qexh']
 
-    elif opts['input'] == 'omega':  # omega given, so compute d_star
-        omega = da_star
-        tau_star = (prop['Qsh'] + prop['Qexh']) / (np.pi * (prop['r2'] + prop['r1']) ** 2 * prop['L'] * omega ** 2)
-        da_star = calc_d_star(tau_star, mu)
+        # Compute other classifier properties
+        prop['del'] = (prop['Qs'] - prop['Qa']) / (prop['Qs'] + prop['Qa'])
+        prop['bet'] = (prop['Qs'] + prop['Qa']) / (Qsh + Qexh)
 
+        if np.all(prop['del'] == prop['del'][0]):
+            prop['del'] = prop['del'][0]
+        if np.all(prop['bet'] == prop['bet'][0]):
+            prop['bet'] = prop['bet'][0]
+
+        # Compute resolution
+        prop['Rt'] = 1 / prop['bet']
+
+        # Constants
+        rc = prop['r1'] / prop['r2']  # Ratio of radii
+        tf = np.pi * prop['L'] * (prop['r2'] ** 2 - prop['r1'] ** 2) / (prop['Qa'] + Qsh)
+        gam = (prop['Qa'] + Qsh - prop['Qs'] * (1 - rc ** 2)) / (prop['Qa'] + Qsh - Qsh * (1 - rc ** 2))
+
+        # Interpret setpoint
+        if opts['input'] == 'd_star':  # d_star given, so compute omega
+            da_star = da_star * 1e-9  # Convert input from nm to m
+            tau_star = autils.cc(da_star) * 1e3 * da_star ** 2 / (18 * mu)
+            omega = np.sqrt((Qsh + Qexh) / (np.pi * (prop['r2'] + prop['r1']) ** 2 * prop['L'] * tau_star))
+
+        elif opts['input'] == 'omega':  # omega given, so compute d_star
+            omega = da_star
+            tau_star = (Qsh + Qexh) / (np.pi * (prop['r2'] + prop['r1']) ** 2 * prop['L'] * omega ** 2)
+            da_star = calc_d_star(tau_star, mu)
+    
     # Relaxation time for da input
     tau = autils.cc(da) * 1e3 * da ** 2 / (18 * mu)
 
@@ -1296,7 +1377,7 @@ def aac(da_star, da, prop, opts=None, *args, dm=None):
     #   prop.tsc is scan time
     if opts['scan']:
         tau_sc = prop['tsc'] / (2 * np.log(prop['omega_e'] / prop['omega_s']))
-        tf = (np.pi * prop['L'] * (prop['r2']**2 - prop['r1']**2)) / (prop['Qa'] + prop['Qsh'])  # Johnson et al., Eq. 13
+        tf = (np.pi * prop['L'] * (prop['r2']**2 - prop['r1']**2)) / (prop['Qa'] + Qsh)  # Johnson et al., Eq. 13
 
         c_sc = prop['omega_s']**2 * tau_sc * (1 - np.exp(-tf / tau_sc))
 
@@ -1316,11 +1397,11 @@ def aac(da_star, da, prop, opts=None, *args, dm=None):
             K = c_sc * np.exp(tm / tau_sc)
 
         # Transfer function calculation
-        f1 = (prop['Qa'] + prop['Qsh'] * rc**2 - 
-              np.exp(-2 * tau * K) * (prop['Qa'] + prop['Qsh'] - prop['Qs'] * (1 - rc**2))) / \
+        f1 = (prop['Qa'] + Qsh * rc**2 - 
+              np.exp(-2 * tau * K) * (prop['Qa'] + Qsh - prop['Qs'] * (1 - rc**2))) / \
              (prop['Qa'] * (1 - rc**2))
 
-        f2 = (prop['Qa'] + prop['Qsh']) / prop['Qa'] * \
+        f2 = (prop['Qa'] + Qsh) / prop['Qa'] * \
              (np.exp(-2 * tau * K) - rc**2) / (1 - rc**2)
 
         f3 = prop['Qs'] / prop['Qa'] * np.ones_like(f1)
@@ -1369,13 +1450,13 @@ def aac(da_star, da, prop, opts=None, *args, dm=None):
         else:
             lambda_tf = 1
             mu_tf = 1
-
+        
         # User-defined transfer function variables for transmission efficiency
         A0 = (lambda_tf * (mu_tf**2)) / (2 * prop['bet'])
         B0 = prop['bet'] / mu_tf
 
         tau_norm = tau / tau_star
-
+        
         Lambda = A0 * (np.abs(tau_norm - (1 + B0)) + 
                        np.abs(tau_norm - (1 - B0)) - 
                        np.abs(tau_norm - (1 + B0 * prop['del'])) - 

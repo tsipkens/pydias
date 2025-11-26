@@ -170,8 +170,13 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             # Use voltage and angular speed to find unique setpoints.
             # This speeds up computation.
-            v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries
-            sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
+            if isinstance(sp, dict):
+                v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries
+                sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
+            else:
+                sp, idx_star = sp.unique()  # find unique entries
+                sp = tfer.pack(sp.as_dict())
+                print(sp)
             
             v, idx = np.unique(np.vstack((m, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
             m = v[:,0]
@@ -222,8 +227,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
         elif classifier == 'aac':
             print('Computing AAC contribution ....')
-
-            d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
+            if isinstance(spec[ii][1], np.ndarray):
+                d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
+            else:
+                d_star, idx_star = spec[ii][1].unique()
             
             v, idx = np.unique(np.vstack((da, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
             da = v[:,0]
