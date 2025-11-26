@@ -343,12 +343,16 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
         el = grid.elements
+        for ii in range(2):
+            if grid.discrete[ii] == 'log':  # use information in grid
+                el[:,ii] = np.log10(el[:,ii])
     else:
         el = np.hstack((vec1, vec2))
+        el = np.log10(el)  # assume elements are log-spaced
     
     #-- Compute Mahalanobis distances between elements -----------------------#
     Gd_inv = np.linalg.inv(Gd)
-    D = squareform(pdist(np.log10(el), metric='mahalanobis', VI=Gd_inv))
+    D = squareform(pdist(el, metric='mahalanobis', VI=Gd_inv))
 
     #-- Compute prior covariance matrix --------------------------------------#
     Gpr = np.exp(-D)
