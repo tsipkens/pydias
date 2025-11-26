@@ -175,8 +175,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
                 sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
             else:
                 sp, idx_star = sp.unique()  # find unique entries
-                sp = tfer.pack(sp.as_dict())
-                print(sp)
+                sp = tfer.pack(sp)
             
             v, idx = np.unique(np.vstack((m, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
             m = v[:,0]

@@ -172,8 +172,9 @@ def pack(sp):
     n = len(next(iter(sp.values())))
     spo = [{} for _ in range(n)]
     for key, value in sp.items():
-        for ii in range(n):
-            spo[ii][key] = value[ii]
+        if isinstance(value, np.ndarray):
+            for ii in range(n):
+                spo[ii][key] = value[ii]
     return spo
 
 def show(s):
