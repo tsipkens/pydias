@@ -40,18 +40,20 @@ class Setpoint(autils.ComputedProperties):
         # Collect all non-None kwargs and match sizes.
         # This allows inputs to be different sizes.
         super().__init__(**kwargs)  # use of ComputedProperties class
+        self.prop = prop
+        self.type = type
         self.toignore = ['toignore', 'prop', 'type']
 
         self.check_lengths()  # check that inputs are the same lengths
-
-        self.prop = prop
-        self.type = type
 
         self._solve()  # compute missing parameters
 
     # --- override __getitem__ to add dim ---
     def __getitem__(self, key):
-        return np.expand_dims(super().__getitem__(key), 1)
+        out = super().__getitem__(key)
+        if isinstance(out, np.ndarray):
+            out = np.expand_dims(out, 1)
+        return out
 
     # --- computation logic ---
     def _solve(self):
@@ -62,13 +64,12 @@ class Setpoint(autils.ComputedProperties):
         # ---------------------------------------------------------------- #
         if self.type == 'pma':
             # Special code for resolution input.
-            if not hasattr(self, 'Rm'):
-                self.Rm = None
+            Rm = self.data.get('Rm')
 
-            if self.Rm is not None:
-                n_B = get_nb(self.m_star, prop)
+            if Rm is not None:
+                n_B = get_nb(self.m_star, prop)  # m_star is a required input here
                 B_star, _, _ = autils.mp2zp(self.m_star, prop, 1, prop['T'], prop['p'])
-                m_max = self.m_star * (1/self.Rm + 1)
+                m_max = self.m_star * (1/Rm + 1)
                 self.omega = np.sqrt(
                     prop['Q'] / (self.m_star * B_star * 2*np.pi * prop['rc']**2 * prop['L'] *
                             ((m_max/self.m_star)**(n_B+1) - (m_max/self.m_star)**n_B))
@@ -144,10 +145,6 @@ class Setpoint(autils.ComputedProperties):
         else:
             print('Classifier not available in Setpoint.')
             pass
-
-    def as_dict(self):
-        sp = super().as_dict()
-        return sp
     
 
 def unpack(sp):
