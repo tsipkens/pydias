@@ -96,6 +96,89 @@ class Grid:
             if self.discrete[ii] == 'log':
                 self.nelements_tr[:,2*ii:2*ii+2] = np.log10(self.nelements_tr[:,2*ii:2*ii+2])
 
+    def __repr__(self):
+        """
+        Generates and prints a smooth-cornered ASCII graphic of the grid 
+        showing limits (span) and counts (ne).
+        
+        Parameters:
+        scale_factor (int): Multiplier for the internal display width/height 
+                            to control the size of the empty box (default is 2).
+        """
+        
+        # --- Determine dimensions and metadata ---
+        scale_factor = 4 / np.min(self.ne)
+
+        # Width of the internal data area (scaled)
+        inner_width = int(np.ceil(self.ne[0] * scale_factor * 3))  # Factor of 2 for better horizontal stretch
+        inner_height = int(np.ceil(self.ne[1] * scale_factor))
+        
+        # Metadata strings (formatted to fit standard display space)
+        x_min_str = f"x={self.span[0][0]:.4g}"
+        x_max_str = f"x={self.span[0][1]:.4g}"
+        y_min_str = f"y={self.span[1][0]:.4g}"
+        y_max_str = f"y={self.span[1][1]:.4g}"
+        
+        w_count_str = f"nx={self.ne[0]}"
+        h_count_str = f"ny={self.ne[1]}"
+        
+        # Label width on the left (for y_max, Ny, y_min labels)
+        label_width = max(len(y_max_str), len(h_count_str), len(y_min_str)) + 1
+        
+        # --- Build components ---
+        
+        # Horizontal Border Character
+        H_BORDER = '─'
+        full_width = label_width + 1 + inner_width  # full width for border line construction
+        
+        # Helper function to create padding for centered labels
+        def create_padding(label, total_width, char=H_BORDER):
+            padding_len = total_width - len(label)
+            left_pad = padding_len // 2
+            right_pad = padding_len - left_pad
+            return char * left_pad + label + char * right_pad
+
+        # --- Construct Output Lines ---
+        output = ["\033[1mGRID\033[0m:"]
+
+        # Top Line: y_max ╭─────────nx──────────╮
+        top_center_label = create_padding(w_count_str, inner_width, char=H_BORDER)
+        top_line = f"{y_max_str.ljust(label_width)}╭{top_center_label}╮"
+        output.append(top_line)
+        
+        # Middle Lines: |   (Empty Space)   |
+        for i in range(inner_height):
+            left_label = ' ' * label_width
+            
+            # Place ny label near the vertical center
+            if i == inner_height // 2:
+                left_label = h_count_str.ljust(label_width)
+            
+            middle_line = f"{left_label}│{' ' * inner_width}│"
+            output.append(middle_line)
+
+        # Bottom Line: y_min ╰───────────╯
+        bottom_line = f"{y_min_str.ljust(label_width)}╰{H_BORDER * inner_width}╯"
+        output.append(bottom_line)
+
+        # X-Limits Line: x_min       nx          x_max
+        # Note: x_min and x_max labels need to span the space created by the horizontal border
+        x_min_pad_len = label_width + 1 # Space before x_min
+        x_max_pad_len = full_width - len(x_max_str) - x_min_pad_len
+
+        x_limit_line = (
+            f"{' ' * x_min_pad_len}"
+            f"{x_min_str}"
+            f"{' ' * (inner_width - len(x_min_str) - len(x_max_str) + 1)}" # Spacing between x_min and x_max
+            f"{x_max_str}"
+        )
+        
+        output.append(x_limit_line)
+
+        # Print the final visualization
+        return '\n'.join(output)
+
+
     def adjacency(self, w=1):
         ind1 = []
         ind2 = []
