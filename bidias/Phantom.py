@@ -158,8 +158,6 @@ class Phantom:
             elif not 's2' in p:
                 p['s2'] = p['s1'] / p['R12'] * p['pow']
 
-        print(p)
-
         return get_cov(**p)
 
     @staticmethod
