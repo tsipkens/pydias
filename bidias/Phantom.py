@@ -115,6 +115,8 @@ class Phantom:
         self.p = self.mu_sig2p(self.mu, self.Sig)
         self.massmob = self.p2massmob(self.p)
 
+        self.power_law = lambda x: 10 ** (self.p['pow'] * (np.log10(x) - self.mu[0]) + self.mu[1])
+
     @staticmethod
     def mu_sig2p(mu, Sig):
         """
