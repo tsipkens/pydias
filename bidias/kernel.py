@@ -77,11 +77,11 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         if mp_idx is None and dm_idx is None:
             da = grid_i.elements[:, da_idx]
             dm = autils.da_rhoeff2dm(da * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
-            m = (np.pi/6) * 1e+3 * \
+            mp = (np.pi/6) * 1e+3 * \
                 grid_i.elements[:, da_idx] ** 3 * 1e-9
         
         elif mp_idx is None:
-            m = (np.pi/6) * grid_i.elements[:, rho_idx] * \
+            mp = (np.pi/6) * grid_i.elements[:, rho_idx] * \
                 grid_i.elements[:, dm_idx] ** 3 * 1e-9
             dm = grid_i.elements[:, dm_idx]
             
@@ -89,7 +89,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
 
     elif mp_idx is not None:
-        m = grid_i.elements[:, mp_idx]
+        mp = grid_i.elements[:, mp_idx]
     
     # MOBILITY CHECK.
     # Handle cases where mobility diameter isn't given (required for PMA/charging).
@@ -97,7 +97,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
         # OPTION 1: Use da and mp to compute dm if available
         if da_idx is not None and mp_idx is not None:
             da = grid_i.elements[:, da_idx]
-            dm = autils.mp_da2dm(m * 1e-18, da * 1e-9) * 1e9
+            dm = autils.mp_da2dm(mp * 1e-18, da * 1e-9) * 1e9
 
         # OPTION 2: Apply mass-mobility relationship
         elif mp_idx is not None:
@@ -124,6 +124,8 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     # AERODYNAMIC CHECK.
     if da_idx is not None:
         da = grid_i.elements[:, da_idx]
+    else:
+        da = autils.dm_mp2da(dm * 1e-9, mp * 1e-18) * 1e9
 
     # Loop over classifiers to compute Lambda
     for ii in range(nc):
@@ -177,7 +179,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
                 sp, idx_star = sp.unique()  # find unique entries
                 sp = tfer.pack(sp)
             
-            v, idx = np.unique(np.vstack((m, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            v, idx = np.unique(np.vstack((mp, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
             m = v[:,0]
             d = v[:,1]
 
@@ -232,10 +234,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
                 d_star, idx_star = spec[ii][1].unique()
             
             v, idx = np.unique(np.vstack((da, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
-            da = v[:,0]
-            d = v[:,1]  # mobility diameter
+            d = v[:,0]
+            d2 = v[:,1]  # mobility diameter
 
-            Lambda[ii], _, _= tfer.aac(d_star, da, spec[ii][2], spec[ii][3], dm=d)
+            Lambda[ii], _, _= tfer.aac(d_star, d, spec[ii][2], spec[ii][3], dm=d2)
 
             Lambda[ii] = Lambda[ii][idx_star,:]
             Lambda[ii] = Lambda[ii][:,idx]
