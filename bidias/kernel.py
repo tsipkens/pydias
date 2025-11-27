@@ -34,7 +34,7 @@ def expand_sp(sp0, grid_b, prop_pma, dim=0):
     return tfer.get_setpoint(prop_pma, 'V', v, 'omega', omega)[0]  # recompile into new setpoint list
 
 
-def build(grid_i, spec, z=None, grid_b=None, type=None):
+def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     """
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
@@ -246,16 +246,25 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
             Lambda[ii] = np.expand_dims(Lambda[ii], axis=2)
 
             textdone()
-
     
     # Compile the kernel
     print("Compiling kernel ...", end="", flush=True)
     Ac = Lambda[0]
     for ii in range(1, nc):
         Ac = Ac * Lambda[ii]  # cannot use *= as dimensions may change
+
+    # Zero any NaN values (e.g., can occur when using dm-mp grid with AAC).
+    Ac[np.isnan(Ac)] = 0
     
+    # If detector measures charge (i.e., electrometer), adjust charge state weighting. 
+    if detect == 'charge' and np.shape(Ac)[2] == len(z):
+        print(' + charge weighting ...', end="", flush=True)
+        A = np.sum(Ac * np.expand_dims(z, [0,1]), axis=2)
+
+    else:  # otherwise sum to get count/number
+        A = np.sum(Ac, axis=2)
+
     # Sum over charge states and multiply by grid area
-    A = np.sum(Ac, axis=2)
     A = A * grid_i.dr()[0]
     
     # Convert to sparse matrix
