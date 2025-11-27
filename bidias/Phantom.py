@@ -220,11 +220,11 @@ class Phantom:
         c: Shift in mean.
         """
 
-        # Consider preset options, specific by T = str.
+        # TO DO: Consider preset options, specific by T = str.
         if type(T) == str:
             _, T, c0 = tools.get_transform(T)
 
-        return Phantom('standard', T @ self.mu + c0, T @ self.Sig @ T.T)
+        return Phantom(mu=T @ self.mu + c0, Sig=T @ self.Sig @ T.T)
 
         
     def show(self, nx=70, ny=70, nc=40):
