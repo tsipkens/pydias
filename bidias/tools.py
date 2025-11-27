@@ -1,7 +1,7 @@
 
 import numpy as np
 
-def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
+def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200, new_type=''):
     """
     Transform a distribution to a different space.
     
@@ -18,6 +18,8 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
         Explicit span of the transformed quantity.
     n_y : int, optional
         Number of elements in the transformed dimension (default is 600).
+    new_type : str, optional
+        Assigns the type of dimension that is being added (e.g., rho, mp, dm).
     
     Returns:
     y : np.ndarray
@@ -31,10 +33,10 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
     from bidias.Grid import Grid
     
     if fun is None:
-        fun = get_transform('mp2rho')[0]
+        fun, new_type, _, _ = get_transform('mp2rho')
 
     elif type(fun) == str:
-        fun = get_transform(fun)[0]
+        fun, new_type, _, _ = get_transform(fun)
 
     dim2 = 1 - dim  # other dimension (switch between 0 and 1)
 
@@ -56,10 +58,10 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
         
         if dim == 1:
             grid_y = Grid(span=[span_y, grid_x.span[1]], ne=[n_y, len(grid_x.edges[1])])
-            grid_y.type = ['', grid_x.type[1]]
+            grid_y.type = [new_type, grid_x.type[1]]
         else:
             grid_y = Grid(span=[grid_x.span[0], span_y], ne=[len(grid_x.edges[0]), n_y])
-            grid_y.type = [grid_x.type[0], '']
+            grid_y.type = [grid_x.type[0], new_type]
     
     x_rs = grid_x.reshape(x)
     if dim == 1:
@@ -117,10 +119,12 @@ def get_transform(spec:str):
         c0 = np.array([0, np.log10(6 / np.pi) + 9])
         T = np.array([[1, 0], [-3, 1]])
         fun = lambda b, a: 6 * a / (np.pi * b ** 3) * 1e9
+        new_type = 'rho'
 
     elif spec == 'rho2mp':
         c0 = np.array([0, np.log10(np.pi / 6) - 9])
         T = np.array([[1, 0], [3, 1]])
         fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
+        new_type = 'mp'
 
-    return fun, T, c0
+    return fun, new_type, T, c0
