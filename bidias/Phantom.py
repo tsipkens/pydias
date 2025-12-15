@@ -359,6 +359,23 @@ def overlay(mu, Sig, sd=2.0, **plot_kwargs):
     xvec = np.logspace(mu[0] - np.max(sd) * np.sqrt(Sig[0,0]), 
                        mu[0] + np.max(sd) * np.sqrt(Sig[0,0]), 20)
     ax.plot(xvec, fun(xvec), **plot_kwargs)
+    
+
+def flines(fun, *args, **kwargs):
+    """Plot a line to edge of an axis."""
+
+    limx = plt.xlim()   # get x-limits of current axis
+    limy = plt.ylim()  # get x-coordinates of where line intersect y-limits of current axis
+    
+    limx_y = np.concatenate((10**minimize(lambda x: (limy[0] - fun(10**x)) ** 2, x0=np.log10(limx[0]))['x'], 
+                        10**minimize(lambda x: (limy[1] - fun(10**x)) ** 2, x0=np.log10(limx[0]))['x']))
+    limx_y = np.sort(limx_y)  # sort (direction dependent)
+
+    xvec = np.logspace(np.log10(np.maximum(limx[0], limx_y[0])), np.log10(np.minimum(limx[1], limx_y[1])), 50)  # resolve the combination
+
+    plt.gca().plot(xvec, fun(xvec), *args, **kwargs)  # finally plot
+    plt.ylim(limy)
+
 
 
 def get_cov(mu1, mu2, s1, s2, R12, **kwargs):
