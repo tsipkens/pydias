@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from scipy.stats import multivariate_normal
+from scipy.optimize import minimize
 
 import bidias.tools as tools
 
@@ -129,7 +130,9 @@ class Phantom:
             "s1": 10**np.sqrt(Sig[0, 0]),
             "s2": 10**np.sqrt(Sig[1, 1]),
             "s2|1": 10**np.sqrt(Sig[1, 1] * (1 - R12**2)),
+            "s1|2": 10**np.sqrt(Sig[0, 0] * (1 - R12**2)),
             "pow": Sig[0, 1] / Sig[0, 0],
+            "pow2": Sig[1, 1] / Sig[0, 1],
             "R12": R12,
         }
 
@@ -151,7 +154,7 @@ class Phantom:
                 if 's1' in p:
                     p['R12'] = 1 / np.sqrt(1 + (p['s2|1'] / (p['s1'] * p['pow']))**2)
                 elif 's2' in p:
-                    p['R12'] = np.sqrt(1 - (p['s2|1'] / (p['s2']))**2)
+                    p['R12'] = np.sqrt(1 - (p['s2|1'] / p['s2'])**2)
             
             if p['pow'] == 0:
                 p['s2'] = p['s2|1']
@@ -240,7 +243,7 @@ class Phantom:
         pos = np.dstack((X, Y))
         
         plt.figure()
-        plt.contourf(10**X, 10**Y, self.rv.pdf(pos), nc)
+        plt.contourf(10**X, 10**Y, self.rv.pdf(pos), nc, cmap='rocket_r')
         plt.xscale('log')
         plt.yscale('log')
         plt.gca().set_box_aspect(1)
@@ -261,7 +264,7 @@ class Phantom:
         return self.rv.pdf(pos)
 
     def transpose(self):
-        return Phantom('standard', mu=np.flip(self.mu), Sig=np.flip(self.Sig), w=self.w)
+        return Phantom('standard', mu=np.flip(self.mu), Sig=np.flip(self.Sig))
     
     def __repr__(self):
         return self.__str__()
@@ -281,7 +284,7 @@ class Phantom:
 
         # Split into roughly half
         mid1 = 2
-        mid2 = 5
+        mid2 = 6
 
         row1  = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[:mid1], vals[:mid1]))
         row2 = "  ".join(f"\033[36m{k}\033[0m={v}" for k, v in zip(keys[mid1:mid2], vals[mid1:mid2]))
@@ -332,6 +335,10 @@ def overlay(mu, Sig, sd=2.0, **plot_kwargs):
     Plot an ellipse representing the covariance matrix `Sig`
     centered at `mu`. sd = number of standard deviations.
     """
+    
+    defaults = {'color': 'k', 'linewidth': 0.5}
+    defaults.update(plot_kwargs)  # set kwarg defaults
+    plot_kwargs = defaults
 
     ax = plt.gca()
 
@@ -345,6 +352,7 @@ def overlay(mu, Sig, sd=2.0, **plot_kwargs):
     vals = vals[order]
     vecs = vecs[:, order]
 
+    # Plot ellipses. 
     for s in sd:
         A = vecs @ np.diag(np.sqrt(vals) * s)
         ellipse_linear = (A @ ellipse_coords) + mu[:,None]
@@ -354,11 +362,10 @@ def overlay(mu, Sig, sd=2.0, **plot_kwargs):
 
         ax.plot(ellipse_linear[0,:], ellipse_linear[1,:], **plot_kwargs)
     
-    pow = Phantom.mu_sig2p(mu, Sig)['pow']
-    fun = lambda x:  10 ** (pow * (np.log10(x) - mu[0]) + mu[1])
-    xvec = np.logspace(mu[0] - np.max(sd) * np.sqrt(Sig[0,0]), 
-                       mu[0] + np.max(sd) * np.sqrt(Sig[0,0]), 20)
-    ax.plot(xvec, fun(xvec), **plot_kwargs)
+    # Plot lines through ellipse. 
+    linestyles = ['-', '--']
+    for ii, pow in enumerate([Sig[0,1] / Sig[0,0], Sig[1,1] / Sig[0,1]]):
+        elines(10**mu, pow, linestyle=linestyles[ii], **plot_kwargs)  # use flines to plot to axis edges
     
 
 def flines(fun, *args, **kwargs):
@@ -375,6 +382,25 @@ def flines(fun, *args, **kwargs):
 
     plt.gca().plot(xvec, fun(xvec), *args, **kwargs)  # finally plot
     plt.ylim(limy)
+    plt.xlim(limx)
+
+def elines(xy, pow, *args, **kwargs):
+    """Plot a power law line to edge of an axis."""
+
+    limx = plt.xlim()   # get x-limits of current axis
+    limy = plt.ylim()  # get x-coordinates of where line intersect y-limits of current axis
+
+    fun = lambda x:  10 ** (pow * (np.log10(x) - np.log10(xy[0])) + np.log10(xy[1]))
+    funi = lambda y: 10 ** (1 / pow * (np.log10(y) - np.log10(xy[1])) + np.log10(xy[0]))
+    
+    limx_y = funi(limy)
+    limx_y = np.sort(limx_y)  # sort (direction dependent)
+
+    xvec = np.logspace(np.log10(np.maximum(limx[0], limx_y[0])), np.log10(np.minimum(limx[1], limx_y[1])), 50)  # resolve the combination
+
+    plt.gca().plot(xvec, fun(xvec), *args, **kwargs)  # finally plot
+    plt.ylim(limy)
+    plt.xlim(limx)
 
 
 
