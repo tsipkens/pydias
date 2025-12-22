@@ -227,7 +227,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
             textdone()
 
         elif classifier == 'aac':
-            print('Computing AAC contribution ....')
+            print('Computing AAC contribution ....', end="", flush=True)
             if isinstance(spec[ii][1], np.ndarray):
                 d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
             else:
