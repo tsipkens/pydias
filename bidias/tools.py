@@ -1,7 +1,7 @@
 
 import numpy as np
 
-def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200, new_type=''):
+def x2y(x, grid_x, fun=None, grid_y=None, axis=1, span_y=None, n_y=200, new_type='', transpose=False):
     """
     Transform a distribution to a different space.
     
@@ -12,14 +12,16 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200, new_type=
         Input grid object.
     fun : function, optional
         Transformation function. Default is mass-mobility transformation.
-    dim : int, optional
-        Dimension to preserve (default is 2).
+    axis : int, optional
+        Dimension to change (default is 1).
     span_y : tuple, optional
         Explicit span of the transformed quantity.
     n_y : int, optional
         Number of elements in the transformed dimension (default is 600).
     new_type : str, optional
         Assigns the type of dimension that is being added (e.g., rho, mp, dm).
+    transpose : bool, optional
+        Whether to transpose the output distribution before returning (default is False)
     
     Returns:
     y : np.ndarray
@@ -38,7 +40,8 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200, new_type=
     elif type(fun) == str:
         fun, new_type, _, _ = get_transform(fun)
 
-    dim2 = 1 - dim  # other dimension (switch between 0 and 1)
+    dim2 = axis
+    dim = 1 - axis  # other dimension (to preserve, switch between 0 and 1)
 
     if grid_y == None:  # build grid, if not given
         # Estimate span_y if not provided
@@ -109,6 +112,9 @@ def x2y(x, grid_x, fun=None, grid_y=None, dim=0, span_y=None, n_y=200, new_type=
     # if isinstance(grid_x, PartialGrid):
     #     grid_y = PartialGrid(grid_x.span, grid_x.ne, r=grid_x.r, slope=grid_x.slope)
     
+    if transpose:
+        grid_y, y = grid_y.transpose(y)
+
     return y, grid_y, T
 
 
@@ -126,5 +132,11 @@ def get_transform(spec:str):
         T = np.array([[1, 0], [3, 1]])
         fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
         new_type = 'mp'
+
+    # elif spec == 'dm2rho':
+    #     c0 = np.array([0, np.log10(np.pi / 6) - 9])
+    #     T = np.array([[0, 1], [-3, 1]])
+    #     fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
+    #     new_type = 'rho'
 
     return fun, new_type, T, c0
