@@ -124,7 +124,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     # AERODYNAMIC CHECK.
     if da_idx is not None:
         da = grid_i.elements[:, da_idx]
-    else:
+    elif mp is not None:
         da = autils.dm_mp2da(dm * 1e-9, mp * 1e-18) * 1e9
 
     # Loop over classifiers to compute Lambda
@@ -180,6 +180,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
                 sp = tfer.pack(sp)
             
             v, idx = np.unique(np.vstack((mp, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            # v, idx = np.unique(np.vstack((mp, autils.mp2dm(grid_i.elements[:, mp_idx] * 1e-18, spec[ii][2]) * 1e9)).T, return_inverse=True, axis=0)
             m = v[:,0]
             d = v[:,1]
 
