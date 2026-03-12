@@ -357,7 +357,7 @@ class Grid:
 
         return C, rmin, rmax
     
-    def plot2d(self, x, cmap='rocket_r', **kwargs):
+    def plot2d(self, x, cmap='rocket_r', bg=True,**kwargs):
 
         if type(cmap) is str:
             cmap = get_colormap(cmap)
@@ -366,11 +366,29 @@ class Grid:
         
         mesh = plt.pcolor(xp, yp, self.reshape(x), cmap=cmap, **kwargs)
 
+        # This creates an empty version of the plot with axes for saving purposes.
+
         if self.discrete[0] == 'log':
             plt.xscale('log')
 
         if self.discrete[1] == 'log':
             plt.yscale('log')
+
+        # -- PLOT ONLY AXES WITHOUT FILL --
+        if bg==False:
+            limx = plt.xlim()  # only get axis limits
+            limy = plt.ylim()
+
+            plt.cla()  # clear axes to reset
+
+            plt.plot([], [])  # plot empty axes
+            plt.xlim(limx)
+            plt.ylim(limy)
+            if self.discrete[0] == 'log':
+                plt.xscale('log')
+            if self.discrete[1] == 'log':
+                plt.yscale('log')
+        # ---------------------------------
 
         if not self.type == None:
             plt.xlabel(self.type[0])
@@ -379,6 +397,44 @@ class Grid:
         plt.gca().set_box_aspect(1)
 
         return mesh
+    
+    def plot2d_marg(self, x, n=5, **kwargs):
+        """
+        Bidimensional plot with marginal distributions. 
+        """
+
+        ax_main = plt.subplot2grid((n, n), (1, 0), colspan=n, rowspan=n-1)
+        mesh = self.plot2d(x, **kwargs)
+
+        ax_top = plt.subplot2grid((n, n), (0, 0), colspan=n, rowspan=1, sharex=ax_main)
+        plt.plot(self.edges[0], self.marginalize(x, axis=0))
+
+        ax_top.tick_params(axis='y', left=False, labelleft=False)
+        ax_top.tick_params(axis='x', bottom=True, labelbottom=False)
+        plt.xscale('log')
+
+        ax_right = plt.subplot2grid((n, n), (1, n-1), colspan=1, rowspan=n-1, sharey=ax_main)
+        plt.plot(self.marginalize(x, axis=1), self.edges[1])
+        ax_right.tick_params(axis='y', left=False, labelleft=False)
+        ax_right.tick_params(axis='x', bottom=True, labelbottom=False)
+        plt.yscale('log')
+
+        # --- ALIGN AXES ---
+        # Force the top and right plots to match the 'shrunk' dimensions of the 1:1 box
+        plt.draw() # Necessary to calculate the box aspect positions
+
+        # Adjust Top Plot width to match Main Plot
+        pos_main = ax_main.get_position()
+        pos_top = ax_top.get_position()
+        ax_top.set_position([pos_main.x0, pos_top.y0, pos_main.width, pos_top.height])
+
+        # Adjust Right Plot height to match Main Plot
+        pos_right = ax_right.get_position()
+        ax_right.set_position([pos_right.x0, pos_main.y0, pos_right.width, pos_main.height])
+
+        plt.sca(ax_main)
+
+        return ax_main, ax_top, ax_right, mesh
 
     def scatter(self, x, cmap='mako_r', edgecolors='k', linewidth=0.2, **kwargs):
 
