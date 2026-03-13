@@ -343,6 +343,7 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
         el = grid.elements
+        el = grid.elements.copy()
         for ii in range(2):
             if grid.discrete[ii] == 'log':  # use information in grid
                 el[:,ii] = np.log10(el[:,ii])
