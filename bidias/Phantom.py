@@ -3,8 +3,8 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from scipy.stats import multivariate_normal
-from scipy.optimize import minimize
+from scipy.stats import multivariate_normal, norm
+from scipy.optimize import minimize, least_squares
 
 import bidias.tools as tools
 
@@ -117,6 +117,7 @@ class Phantom:
         self.massmob = self.p2massmob(self.p)
 
         self.power_law = lambda x: 10 ** (self.p['pow'] * (np.log10(x) - self.mu[0]) + self.mu[1])
+        self.power_law2 = lambda x: 10 ** (self.p['pow2'] * (np.log10(x) - self.mu[0]) + self.mu[1])
 
     @staticmethod
     def mu_sig2p(mu, Sig):
@@ -265,6 +266,23 @@ class Phantom:
 
     def transpose(self):
         return Phantom('standard', mu=np.flip(self.mu), Sig=np.flip(self.Sig))
+    
+    def conditional(self, xy, axis=0):
+        """
+        Extracts the pdf for the conditional distribution specified.
+        """
+        if axis == 0:
+            sig = np.log10(self.p['s1|2'])
+            mu = 1 / self.p['R12'] * np.log10(self.p['s2']) / np.log10(self.p['s1']) * \
+                (np.log10(xy) - np.log10(self.p['mu1'])) + np.log10(self.p['mu2'])
+        else:
+            sig = np.log10(self.p['s2|1'])
+            mu = self.p['R12'] * np.log10(self.p['s2']) / np.log10(self.p['s1']) * \
+                (np.log10(xy) - np.log10(self.p['mu1'])) + np.log10(self.p['mu2'])
+
+        fun = lambda x: norm.pdf(np.log10(x), mu, sig)
+
+        return fun, 10**mu, 10**sig
     
     def __repr__(self):
         return self.__str__()
@@ -415,29 +433,27 @@ def get_cov(mu1, mu2, s1, s2, R12, **kwargs):
     Sig[1,0] = Sig[0,1]
     return mu, Sig
 
-def fit(elements, f):
+def fit(x, elements):
     """
     Fit a Phantom to a data. 
 
     Parameters
     ----------
+    x : ndarray (N,)
+        Values representing PDF(x, y) (possibly noisy).
     elements : ndarray (N,2)
         Elements on which the PDF is evaluated, arranged as [x-coordinates, y-coordinates].
-    f : ndarray (N,)
-        Values representing PDF(x, y) (possibly noisy).
 
     Returns
     -------
-    params : dict
-        Dictionary containing mux, muy, sigx, sigy, rho.
-    f_fit : ndarray
-        Fitted PDF evaluated at (x, y).
+    pha : Phantom
+        Phantom representing the data. 
     """
 
     # Flatten data
     x = np.log10(elements[:,0].ravel())
     y = np.log10(elements[:,1].ravel())
-    f = np.asarray(f).ravel()
+    f = np.asarray(x).ravel()
 
     # Initial estimates from weighted moments
     w = f / (f.sum() + 1e-12)
@@ -472,6 +488,35 @@ def fit(elements, f):
     pha = Phantom('standard', *get_cov(*res.x[:-1]))
 
     return pha
+
+
+def fit_sample(x, edges):
+    """
+    Fit to the unimodal data by sampling and computing the covariance and means.
+    """
+
+    # ----------------------------------------------------
+    # 1. Sample points from the discretized PDF
+    # ----------------------------------------------------
+    flat_pdf = x / x.sum()  # normalize to ensure it's a proper PDF
+    cdf = np.cumsum(flat_pdf)  # get cdf
+    
+    N = 20000 # number of samples
+
+    # Draw uniform random values in [0,1]
+    u = np.random.rand(N)
+
+    # Find grid-cell indices corresponding to sampled CDF positions
+    idx = np.searchsorted(cdf, u)
+
+    # Convert 1D indices → 2D grid coordinates
+    iy, ix = np.divmod(idx, len(edges[0]))
+    samples = np.column_stack((np.log10(edges[0])[ix], np.log10(edges[1])[iy]))
+
+    # ----------------------------------------------------
+    # 2. Get covariance and means.
+    # ----------------------------------------------------
+    return Phantom(mu=np.average(samples, axis=0), Sig=np.cov(samples[:,0], samples[:,1]))
 
 
 def fit_gmm(x, edges, n=1):
@@ -512,13 +557,34 @@ def fit_gmm(x, edges, n=1):
         covariance_type='full',
         n_init=10,           # multiple initializations for robustness
         max_iter=500,
-        random_state=42
+        random_state=42,
     )
     gmm.fit(samples)
 
+    # real_covariances = gmm.covariances_
+    # real_means = gmm.means_
+
+    # -- Transform the mean and covariance back --
+    scaled_covs = gmm.covariances_
+
+    # Create a diagonal matrix of the scales (standard deviations)
+    # This acts as the transformation matrix
+    S = np.diag(scaler.scale_)
+
+    # Back-transform each component's covariance matrix
+    real_covariances = []
+    for cov in scaled_covs:
+        # Applying S * Cov * S (using dot products)
+        real_cov = S @ cov @ S
+        real_covariances.append(real_cov)
+
+    real_covariances = np.array(real_covariances)
+    real_means = (gmm.means_ * scaler.scale_) + scaler.mean_
+    # --------------------------------------------
+
     if n == 1:
-        pha = Phantom(mu=gmm.means_[0], Sig=gmm.covariances_[0])
+        pha = Phantom(mu=real_means[0], Sig=real_covariances[0])
     else:
-        pha = Phantoms(mu=gmm.means_, Sig=gmm.covariances_, w=gmm.weights_)
+        pha = Phantoms(mu=real_means, Sig=real_covariances, w=gmm.weights_)
 
     return pha
