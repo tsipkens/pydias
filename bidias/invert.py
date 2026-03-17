@@ -13,7 +13,8 @@ from cmap import textdone
 
 from bidias.Grid import PartialGrid
 
-def lsq(A, b, method=None):
+
+def lsq(A, b, method=None, C=None, d=None):
     if method == None:
         method = 'osqp'
 
@@ -44,7 +45,12 @@ def lsq(A, b, method=None):
 
         xc = cp.Variable(np.size(A, 1))
         objective = cp.Minimize(cp.sum_squares(A @ xc - b))
-        constraints = [0 <= xc, xc <= np.inf]
+
+        if C is None:
+            constraints = [0 <= xc, xc <= np.inf]
+        else:
+            
+            constraints = [0 <= xc, xc <= np.inf, C @ xc == d]
         prob = cp.Problem(objective, constraints)
         prob.solve(solver='OSQP', eps_abs=1e-9)
         x = xc.value
