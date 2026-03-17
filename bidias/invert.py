@@ -13,6 +13,32 @@ from cmap import textdone
 
 from bidias.Grid import PartialGrid
 
+# NOTE: To be added.
+def reducer(A, b):
+    """
+    Reduce the size of the problem by removing 
+    empty columns and empty data points
+    (but then need to force towards zero).
+
+    Generalizable, but current only remove all zero columns (i.e., data does not impact x).
+    """
+    # x_keep = np.sum(A, axis=0) > -999 # != 0
+    b_keep = np.sum(A, axis=1) != 0
+
+    A = A[b_keep, :]
+    b = b[b_keep]
+
+    return A, b, b_keep
+
+# def expander(x, x_keep):
+#     """
+#     Supplement x back up to the main size. 
+#     """
+#     xn = np.zeros(np.shape(x_keep))
+#     xn[x_keep] = x
+
+#     return xn
+
 
 def lsq(A, b, method=None, C=None, d=None):
     if method == None:
@@ -93,6 +119,19 @@ def adjacency(nx, ny, w=1):
     adj = sp.coo_matrix((vec, (ind1, ind2)), shape=(nx * ny, nx * ny))
     return adj
 
+def apply_dirichlet(L, isedge):
+    """
+    Apply Dirichlet boundary conditions given a list of edges.
+    """
+    L = L.tolil() # Use LIL for efficient row manipulation
+    
+    for idx in isedge:# Set the entire row to zeros first
+        L[idx, :] = 0  # zero the entire row
+        L[idx, idx] = 1.0  # set the diagonal to 1
+    
+    return L.tocsr() # convert back to CSR and return
+
+
 def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0, anisotropy=1):
     """
     Generates Tikhonov smoothing operators/matrix, L.
@@ -103,7 +142,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
         The order of the Tikhonov regularization. 
         Default is 1 (first derivative).
     
-    n : int or Grid
+    nx : int or Grid
         The number of grid points in the first dimension.
         Alternatively, use the grid input. 
     
@@ -129,33 +168,32 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
     """
 
     # Interpret boundary condition. 
-    # Convert to integers correspond to which order derivative is zero.
+    # Convert to integers corresponding to which order derivative is zero.
     if bc == 'dirichlet':
         bc = 0
     elif bc == 'nuemann':
         bc = 1
     elif bc is None:
-        bc = int(np.floor(order))  # By default, match boundary condition to order
+        bc = int(np.floor(order))  # by default, match boundary condition to order
     
     # Get dimensions. 
     # If Grid or PartialGrid, derive from grid. 
-    # Otherwise, use n and x_length. 
     if not grid == None:
         nx = grid.ne[0]
         ny = grid.ne[1]
         x_length = np.prod(grid.ne)
 
-        A = grid.adjacency()  # adjacency matrix
+        adj = grid.adjacency()  # adjacency matrix
         isedge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
 
-    else:
+    else: # otherwise build adjacency matrix for full grid for compatibility
         if x_length % nx != 0 and order != 0:
             raise ValueError("x_length must be an integer multiple of n.")
         
         # Now build adjacency matrix. 
         ny = np.int32(x_length / nx)
-        A = adjacency(nx, ny)
-        isedge = np.where(np.sum(A, axis=1).A1 != 4)
+        adj = adjacency(nx, ny)
+        isedge = np.where(np.sum(adj, axis=1).A1 != 4)
         
     # Handle aniostropy by calculating weightings.
     # wx = anisotropy / ((1 + anisotropy))
@@ -169,28 +207,32 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
         Lpr0 = -sp.eye(x_length, format='csr')
 
     elif order == 1:  # 1st order Tikhonov
+        # Produces a flattened Tikhonov matrix corresponding to Lx + Ly = 0. 
 
-        Lpr0 = sp.triu(A, k=1)  # forward difference corresponds to upper triangle
-        if bc == 1:
-            D = sp.diags(Lpr0.sum(axis=1).A1)  # adjust diagonal
-        elif bc == 0:
-            D = sp.diags(2 * np.ones(np.shape(Lpr0)[0]))
-
+        Lpr0 = sp.triu(adj, k=1)  # forward difference corresponds to upper triangle
+        
+        # Perform operation common to BCs. 
+        D = sp.diags(Lpr0.sum(axis=1).A1)  # adjust diagonal (each row now sums to zero)
         Lpr0 = D - Lpr0
-        Lpr0 = Lpr0[:-1, :]  # remove trailing zeros
 
-        # Lpr0 = sp.vstack((sp.csr_matrix(np.zeros((1,np.shape(Lpr0)[0]))), Lpr0))  # would append zeros at top for bc handling
+        # Modify based on boundary conditions.
+        if bc == 1: Lpr0 = Lpr0[:-1, :]  # remove trailing zeros, then done
+        elif bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
+        else: raise ValueError("Boundary condition must be 0 (dirichlet) or 1 (nuemann).")
 
     elif order == 2:  # 2nd order Tikhonov (with variants)
 
         # Case 0: standard Laplacian
         if variant == 0:
             if bc == 1:
-                D = sp.diags(A.sum(axis=1).A1)  # adjust diagonal
+                D = sp.diags(adj.sum(axis=1).A1)  # adjust diagonal
             elif bc == 0:
-                D = sp.diags(4 * np.ones(np.shape(A)[0]))
+                D = sp.diags(4 * np.ones(np.shape(adj)[0]))
 
-            Lpr0 = D - A
+            Lpr0 = D - adj
+
+            # Modify based on boundary conditions.
+            if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
 
         # Case 1: difference in both dimensions
         elif variant == 1:
@@ -202,18 +244,15 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
             Dy = -2 * sp.eye(nx, nx)
             Dy = sp.diags([np.ones(nx - 1), np.ones(nx - 1)], [-1, 1]) + Dy
 
-            Lpr1 = var[1] * sp.kron(Iy, Dy)
+            Lpr1 = sp.kron(Iy, Dy)
             Lpr2 = sp.kron(Dx, Ix)
             Lpr0 = Lpr1 - Lpr2
 
-            # if isinstance(grid, PartialGrid):
-            #     Lpr0 = Lpr0.tolil()
-            #     Lpr0[grid.missing, :] = 0
-            #     Lpr0[:, grid.missing] = 0
-            #     Lpr0 = Lpr0.tocsr()
-
         else:
-            print('Variant not available.')
+            raise ValueError("Variant not available.")
+
+        # Modify based on boundary conditions.
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
 
     elif order == 3:
         # 3rd order derivative
@@ -231,10 +270,8 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
         Lpr2 = sp.kron(Dx, Ix)
         Lpr0 = Lpr1 + Lpr2
 
-        # if hasattr(grid, 'missing'):
-        #     Lpr0 = Lpr0.tocsr()
-        #     Lpr0[grid.missing, :] = 0
-        #     Lpr0[:, grid.missing] = 0
+        # Modify based on boundary conditions.
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
 
     else:
         if 1 < order < 2:
@@ -261,7 +298,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
     return Lpr0, Lpr1, Lpr2
 
 
-def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=None, method=None):
+def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=None, **kwargs):
     """
     Performs inversion using various order Tikhonov regularization.
     Regularization takes place in 2D. The type of regularization or prior
@@ -302,6 +339,8 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     print('\r' + '\033[36m' + '[ TIKHONOV INVERSION ]' + '\033[0m')
     print('Running ...', end="", flush=True)
 
+    A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
+
     start_time = time.time() # enables timing
 
     x_length = A.shape[1]
@@ -321,16 +360,19 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Lpr0, _, _ = tikhonov_lpr(order, n, x_length, bc, grid=grid)
 
     Lpr = lam * Lpr0.todense()
+
+    # Lpr = Lpr[:, x_keep][x_keep[:-1], :]
+    # if 'C' in kwargs:
+    #     kwargs['C'] = kwargs['C'][:, x_keep]
     
     # Choose and execute solver
-    pr_length = Lpr0.shape[0]
+    pr_length = Lpr.shape[0]
     
     A_aug = np.asarray(np.vstack((A, Lpr)))
     b_aug = np.concatenate([b, np.zeros(pr_length)])
     
-    A_aug2 = sp.csr_matrix(A_aug)
-
-    x = lsq(A_aug2, b_aug, method=method)
+    A_aug2 = sp.csc_matrix(A_aug)
+    x = lsq(A_aug2, b_aug, **kwargs)
 
     D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
 
@@ -342,13 +384,14 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
 
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
+    # x = expander(x, x_keep)
+
     return x, D, Lpr0, Gpo_inv
 
 
 def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
-        el = grid.elements
         el = grid.elements.copy()
         for ii in range(2):
             if grid.discrete[ii] == 'log':  # use information in grid
@@ -383,7 +426,7 @@ def get_Gd(gsd1, gsd2, R=0.95):
     Gd[0,1] = Gd[1,0]
     return Gd
 
-def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None, grid=None):
+def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, **kwargs):
 
     print('\r' + '\033[36m' + '[ EXPONENTIAL DISTANCE INVERSION ]' + '\033[0m')
 
@@ -395,11 +438,6 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None
     #-- Parse inputs ---------------------------------------------#
     if Gd[0, 1] / np.sqrt(Gd[0, 0] * Gd[1, 1]) >= 1:
         raise ValueError('Correlation greater than 1.')
-
-    if xi is None:
-        xi = None  # if no initial x is given
-    if solver is None:
-        solver = None  # if computation method not specified
     #-------------------------------------------------------------#
 
     # Use external function to evaluate prior covariance
@@ -417,7 +455,10 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None
     #-- Choose and execute solver --------------------------------#
     print('Inverting system ...', end="", flush=True)
     start_time = time.time()  # time the contribution
-    x = nnls(A_aug, b_aug)[0]
+
+    A_aug2 = sp.csr_matrix(A_aug)
+    x = lsq(A_aug2, b_aug, **kwargs)
+
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
 
