@@ -69,6 +69,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     
     # MASS CHECK.
     # Unpack grid elements for transfer function evaluation.
+    mp = None
     if rho_idx is not None:
         for ii in np.arange(len(spec)):
             if spec[ii][0] == 'pma':
