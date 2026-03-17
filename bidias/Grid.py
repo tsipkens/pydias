@@ -179,31 +179,37 @@ class Grid:
         return '\n'.join(output)
 
 
-    def adjacency(self, w=1):
-        ind1 = []
-        ind2 = []
-        vec = []
+    @staticmethod
+    def adjacency0(ne, anisotropy=1.0):
+        """
+        Compute the adjacency matrix using a four-point stencil.
+        Allows for anisotropy (> 1 weights horizontal more significantly).
+        This can be called independently of instance of Grid class.
+        """
+        Ne = np.prod(ne)
+        nx = ne[0]
+        
+        w_x, w_y = anisotropy, 1.0
+        ind1, ind2, vec = [], [], []
 
-        for jj in range(np.prod(self.ne)):
-            if (jj + 1) % self.ne[0] != 0:  # up pixels
-                ind1.append(jj)
-                ind2.append(jj + 1)
-                vec.append(w)
-            if jj % self.ne[0] != 0:  # down pixels
-                ind1.append(jj)
-                ind2.append(jj - 1)
-                vec.append(w)
-            if jj >= self.ne[0]:  # left pixels
-                ind1.append(jj)
-                ind2.append(jj - self.ne[0])
-                vec.append(1)
-            if jj < (np.prod(self.ne) - self.ne[0]):  # right pixels
-                ind1.append(jj)
-                ind2.append(jj + self.ne[0])
-                vec.append(1)
+        for jj in range(Ne):
+            # Horizontal (X)
+            if (jj + 1) % nx != 0:
+                ind1.extend([jj, jj + 1])
+                ind2.extend([jj + 1, jj])
+                vec.extend([w_x, w_x])
+                
+            # Vertical (Y)
+            if jj < (Ne - nx):
+                ind1.extend([jj, jj + nx])
+                ind2.extend([jj + nx, jj])
+                vec.extend([w_y, w_y])
 
-        adj = coo_matrix((vec, (ind1, ind2)), shape=(np.prod(self.ne), np.prod(self.ne)))
-        return adj
+        return coo_matrix((vec, (ind1, ind2)))
+
+    def adjacency(self, **kwargs):
+        """Bridging function to static method."""
+        return Grid.adjacency0(self.ne, **kwargs)
     
     def isedge(self):
         """
@@ -263,34 +269,6 @@ class Grid:
         dr = (dr1.ravel() * dr2.ravel())
         
         return dr, dr1, dr2
-    
-    def l1(self, w=1, bc=1):
-        """
-        Compute the first-order Tikhonov operator.
-        W adds a weight used to reevaluate the adjacency matrix.
-
-        Parameters:
-        w: Optional weight used to recalculate the adjacency matrix.
-        bc: Optional boundary condition flag. If bc == 0, force zeros at the boundary.
-
-        Returns:
-        l1: First-order Tikhonov operator matrix.
-        """
-        
-        adj_local = Grid.adjacency(self, w)  # Reevaluate adjacency with weight
-        
-        # Compute L1: -diag(sum(tril(adj_local))) + triu(adj_local)
-        l1 = -np.diag(np.sum(np.tril(adj_local.todense()), axis=1)) + np.triu(adj_local.todense())
-        
-        # Add unity on diagonal in final row for stability in square matrix
-        l1[-1, -1] = -1
-        
-        if bc == 0:  # Force zeros at boundary condition
-            isedge = np.where(self.elements[:, 1] == self.edges[1][-1])[0]
-            isedge = np.concatenate((isedge, np.where(self.elements[:, 0] == self.edges[0][-1])[0]))
-            l1[np.ix_(isedge, isedge)] = np.eye(len(isedge))  # Replace entries with identity
-        
-        return l1
     
     def ray_sum(self, r, slope, f_bar=True):
         """
@@ -529,26 +507,14 @@ class PartialGrid(Grid):
 
         self.adj = PartialGrid.adjacency(self)
 
-    
-    def adjacency(self, w=1):
-        """
-        Compute the adjacency matrix using a four-point stencil.
-        
-        Parameters:
-        w: Optional weight to apply to vertical pixels.
-        
-        Returns:
-        adj: Adjacency matrix after processing.
-        isedge: Boolean array indicating whether an element is adjacent to a new edge.
-        """
 
+    def adjacency(self, **kwargs):
         # Call inherited adjacency method from the Grid class
-        adj = Grid.adjacency(self, w)
-        adj = adj.todense()
-
+        adj = Grid.adjacency(self, **kwargs)
+        
         # Remove rows and columns corresponding to missing elements
-        adj = adj[self.remaining, :]
-        adj = adj[:, self.remaining]
+        adj = adj.tocsr()
+        adj = adj[self.remaining, :][:, self.remaining]
         adj = coo_matrix(adj)
 
         return adj
