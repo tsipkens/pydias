@@ -4,11 +4,13 @@ import numpy as np
 from bidias import Grid
 
 import scipy.sparse as sp
-from scipy.sparse.linalg import lsqr
+from scipy.sparse.linalg import lsqr, splu
 from scipy.linalg import cholesky, solve, lstsq
 from scipy.optimize import lsq_linear, nnls
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse.csgraph import laplacian
+
+from tqdm import tqdm
 
 import time
 
@@ -32,6 +34,8 @@ def reducer(A, b):
     b_keep = np.sum(A, axis=1) != 0
     A = A[b_keep, :]
     b = b[b_keep]
+
+    A = sp.coo_matrix(A)  # convert to sparse
 
     return A, b, b_keep
 
@@ -88,55 +92,21 @@ def lsq(A, b, method=None, C=None, d=None):
 
     return x
 
-def adjacency(nx, ny, w=1):
-    """
-    Compute the adjacency matrix using a four-point stencil.
-    
-    Parameters:
-    w: Optional weight to apply to vertical pixels.
-    
-    Returns:
-    adj: Adjacency matrix after processing.
-    isedge: Boolean array indicating whether an element is adjacent to a new edge.
-    """
-    ind1 = []
-    ind2 = []
-    vec = []
-
-    for jj in range(nx * ny):
-        if (jj + 1) % nx != 0:  # up pixels
-            ind1.append(jj)
-            ind2.append(jj + 1)
-            vec.append(w)
-        if jj % nx != 0:  # down pixels
-            ind1.append(jj)
-            ind2.append(jj - 1)
-            vec.append(w)
-        if jj >= nx:  # left pixels
-            ind1.append(jj)
-            ind2.append(jj - nx)
-            vec.append(1)
-        if jj < (nx * ny - nx):  # right pixels
-            ind1.append(jj)
-            ind2.append(jj + nx)
-            vec.append(1)
-
-    adj = sp.coo_matrix((vec, (ind1, ind2)), shape=(nx * ny, nx * ny))
-    return adj
-
-def apply_dirichlet(L, isedge):
+def apply_dirichlet(L, is_edge):
     """
     Apply Dirichlet boundary conditions given a list of edges.
     """
     L = L.tolil() # Use LIL for efficient row manipulation
     
-    for idx in isedge:# Set the entire row to zeros first
+    for idx in is_edge:# Set the entire row to zeros first
         L[idx, :] = 0  # zero the entire row
         L[idx, idx] = 1.0  # set the diagonal to 1
     
     return L.tocsr() # convert back to CSR and return
 
 
+# =========== TIKHONOV REGULARIZATION =========== #
+#             (i.e., ridge regression)
 def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0, anisotropy=1.0):
     """
     Generates Tikhonov smoothing operators/matrix, L.
@@ -181,28 +151,23 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
     elif bc is None:
         bc = int(np.floor(order))  # by default, match boundary condition to order
     
-    # Get dimensions. 
-    # If Grid or PartialGrid, derive from grid. 
-    if not grid == None:
+    # ---- Get dimensions and adjacency ----
+    if not grid == None:  # if Grid or PartialGrid is given
         nx = grid.ne[0]
         ny = grid.ne[1]
         x_length = np.prod(grid.ne)
 
         adj = grid.adjacency(anisotropy=anisotropy)  # adjacency matrix
-        isedge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
+        is_edge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
 
-    else: # otherwise build adjacency matrix for full grid for compatibility
+    else:  # otherwise build adjacency matrix for full grid for compatibility
         if x_length % nx != 0 and order != 0:
             raise ValueError("x_length must be an integer multiple of n.")
         
         # Now build adjacency matrix. 
         ny = np.int32(x_length / nx)
         adj = Grid.Grid.adjacency0([nx, ny], anisotropy=anisotropy)  # use existing Grid method
-        isedge = np.where(np.sum(adj, axis=1).A1 != 4)
-        
-    # Handle aniostropy by calculating weightings.
-    # wx = anisotropy / ((1 + anisotropy))
-    # wy = 1 / (1 + anisotropy)
+        is_edge = np.where(np.sum(adj, axis=1).A1 != 4)
 
     Lpr1 = None
     Lpr2 = None # default if not overwritten
@@ -232,7 +197,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
                 scale[target_rows] = 1.0 / diags[target_rows]  # adjust on only target rows
                 Lpr0 = sp.diags(scale) @ Lpr0
 
-            elif bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
+            elif bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
             else: raise ValueError("Boundary condition must be 0 (dirichlet) or 1 (nuemann).")
 
         elif variant == 1:
@@ -264,7 +229,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
             Lpr0 = laplacian(adj)  # use existing Laplacian function
 
             # Modify based on boundary conditions.
-            if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
+            if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
 
         # Case 1: difference in both dimensions
         elif variant == 1:
@@ -284,7 +249,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
             raise ValueError("Variant not available.")
 
         # Modify based on boundary conditions.
-        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
 
     elif order == 3:
         # 3rd order derivative
@@ -303,7 +268,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
         Lpr0 = Lpr1 + Lpr2
 
         # Modify based on boundary conditions.
-        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, isedge)
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
 
     else:
         if 1 < order < 2:
@@ -330,7 +295,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
     return Lpr0, Lpr1, Lpr2
 
 
-def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=None, anisotropy=1.0, **kwargs):
+def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=None, variant=0, anisotropy=1.0, **kwargs):
     """
     Performs inversion using various order Tikhonov regularization.
     Regularization takes place in 2D. The type of regularization or prior
@@ -346,7 +311,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Regularization parameter.
     order : int, can be replaced by L
         Specifies the order of Tikhonov regularization.
-    n : int or Grid, optional
+    nx : int, optional (but then requires grid or Lpr0)
         Length of the first dimension of the solution (otherwise, specify grid).
     bc : int, optional
         Boundary conditions.
@@ -373,6 +338,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Inverse posterior covariance.
     """
     print('\r' + '\033[36m' + '[ TIKHONOV INVERSION ]' + '\033[0m')
+    print(f'order={order}')
     print('Running ...', end="", flush=True)
 
     A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
@@ -393,9 +359,9 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
 
     # Get Tikhonov smoothing matrix (if not given)
     if Lpr0 == None:
-        Lpr0, _, _ = tikhonov_lpr(order, n, x_length, bc, grid=grid, anisotropy=anisotropy)
+        Lpr0, _, _ = tikhonov_lpr(order, nx, x_length, bc, grid=grid, anisotropy=anisotropy, variant=variant)
 
-    Lpr = lam * Lpr0.todense()
+    Lpr = lam * Lpr0
 
     # Lpr = Lpr[:, x_keep][x_keep[:-1], :]
     # if 'C' in kwargs:
@@ -404,7 +370,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     # Choose and execute solver
     pr_length = Lpr.shape[0]
     
-    A_aug = np.asarray(np.vstack((A, Lpr)))
+    A_aug = sp.vstack((A, Lpr))
     b_aug = np.concatenate([b, np.zeros(pr_length)])
     
     A_aug2 = sp.csc_matrix(A_aug)
@@ -425,6 +391,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     return x, D, Lpr0, Gpo_inv
 
 
+# =========== EXP. DISTANCE REGULARIZATION =========== #
 def exp_dist_lpr(Gd, vec2, vec1, grid=None):
 
     if hasattr(grid, 'elements'):
