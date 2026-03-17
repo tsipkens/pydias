@@ -337,8 +337,7 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     Gpo_inv : np.ndarray, optional
         Inverse posterior covariance.
     """
-    print('\r' + '\033[36m' + '[ TIKHONOV INVERSION ]' + '\033[0m')
-    print(f'order={order}')
+    print('\r' + '\033[36m' + f'[ TIKHONOV INVERSION (order={order}) ]' + '\033[0m')
     print('Running ...', end="", flush=True)
 
     A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
@@ -496,8 +495,10 @@ def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e
     D1, _, _ = tikhonov_lpr(order=1, nx=nx, grid=grid, x_length=x_length)
     D2, _, _ = tikhonov_lpr(order=2, nx=nx, grid=grid, x_length=x_length)
     
+    print('\r' + '\033[36m' + '[ TOTAL VARIATION INVERSION ]' + '\033[0m')
     print('Inverting system ...', end="", flush=True)
     start_time = time.time()  # time the contribution
+
     for ii in tqdm(range(max_iter)):
         # Build the prior matrix.
         w = np.concatenate((1 / np.sqrt(np.sqrt((D1 @ x)**2 + delta**2)), [0]))
