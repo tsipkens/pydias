@@ -478,3 +478,43 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, **kwargs)
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
     return x, D, Lpr0, Gpo_inv
+
+
+# =========== TOTAL VARIATION REGULARIZATION =========== #
+def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e-5, **kwargs):
+    """
+    Total variation regularization based on that in Grauer et al. (2018). 
+    """
+    A, b, _ = reducer(A, b)
+    x_length = A.shape[1]
+
+    if xi is None:
+        xi = np.ones(x_length)
+    x = xi
+    
+    # Get gradient operators. 
+    D1, _, _ = tikhonov_lpr(order=1, nx=nx, grid=grid, x_length=x_length)
+    D2, _, _ = tikhonov_lpr(order=2, nx=nx, grid=grid, x_length=x_length)
+    
+    print('Inverting system ...', end="", flush=True)
+    start_time = time.time()  # time the contribution
+    for ii in tqdm(range(max_iter)):
+        # Build the prior matrix.
+        w = np.concatenate((1 / np.sqrt(np.sqrt((D1 @ x)**2 + delta**2)), [0]))
+        Lpr = lam * (sp.diags(w) @ D2)
+        Lpr = sp.coo_matrix(Lpr)
+
+        # Augment data with prior matrix.
+        A_aug = sp.vstack([A, Lpr])
+        b_aug = np.concatenate([b, np.zeros(Lpr.shape[0])])
+
+        #-- Choose and execute solver --------------------------------
+        A_aug2 = sp.csr_matrix(A_aug)
+        x = lsq(A_aug2, b_aug, **kwargs)
+
+    end_time = time.time()
+    textdone(f' ({end_time - start_time:.2f} s)')
+
+    print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
+            
+    return x
