@@ -5,9 +5,9 @@ from bidias import Grid
 
 import scipy.sparse as sp
 from scipy.sparse.linalg import lsqr, splu
-from scipy.linalg import cholesky, solve, lstsq
+from scipy.linalg import cholesky, solve, lstsq, solve_triangular, inv
 from scipy.optimize import lsq_linear, nnls
-from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import cdist
 from scipy.sparse.csgraph import laplacian
 
 from tqdm import tqdm
@@ -371,6 +371,19 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     
     A_aug = sp.vstack((A, Lpr))
     b_aug = np.concatenate([b, np.zeros(pr_length)])
+
+    # Add extra condition zeroing regions where data suggests zero.
+    # Specifically, look at which data point most influences an element. 
+    # If b is zero for that element, add 0th-order Tikhonov. 
+    # if encourage_zeros:
+    #     not_to_zero = (b[np.argmax(A, axis=0)] != 0)[0,:]
+
+    #     Lpr_z, _, _ = tikhonov_lpr(order=0, nx=nx, x_length=x_length, grid=grid)
+    #     Lpr_z.tolil()[not_to_zero, :] = 0
+    #     pr_length_z = Lpr_z.shape[0]
+    
+    #     A_aug = sp.vstack((A_aug, lam / 3 * Lpr_z))
+    #     b_aug = np.concatenate([b_aug, np.zeros(pr_length_z)])
     
     A_aug2 = sp.csc_matrix(A_aug)
     x = lsq(A_aug2, b_aug, **kwargs)
@@ -391,30 +404,39 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
 
 
 # =========== EXP. DISTANCE REGULARIZATION =========== #
-def exp_dist_lpr(Gd, vec2, vec1, grid=None):
-
+def exp_dist_lpr(Gd, vec2, vec1, grid=None, dist_cutoff=1.75, fast=False):
+    # 1. Pre-process elements efficiently
     if hasattr(grid, 'elements'):
         el = grid.elements.copy()
         for ii in range(2):
-            if grid.discrete[ii] == 'log':  # use information in grid
-                el[:,ii] = np.log10(el[:,ii])
+            if grid.discrete[ii] == 'log':
+                el[:, ii] = np.log10(el[:, ii])
     else:
-        el = np.hstack((vec1, vec2))
-        el = np.log10(el)  # assume elements are log-spaced
+        # Avoid hstack if possible, but keeping logic consistent
+        el = np.log10(np.column_stack((vec1, vec2)))
     
     #-- Compute Mahalanobis distances between elements -----------------------#
-    Gd_inv = np.linalg.inv(Gd)
-    D = squareform(pdist(el, metric='mahalanobis', VI=Gd_inv))
+    # Linear transformation approach: (x-y).T @ Gd_inv @ (x-y) 
+    # is equivalent to Euclidean distance of (L_inv @ el)
+    # where L @ L.T = Gd.
+    L_Gd = cholesky(Gd, lower=True)
+    el_transformed = np.linalg.solve(L_Gd, el.T).T
+    D = cdist(el_transformed, el_transformed, metric='euclidean')
 
-    #-- Compute prior covariance matrix --------------------------------------#
+    # #-- Compute prior covariance matrix --------------------------------------#
+    # Gpr is a positive definite kernel (Squared Exponential/Exponential)
     Gpr = np.exp(-D)
 
-    Gpr_inv = np.linalg.pinv(Gpr)
-    # Gpr_inv[Gpr_inv < 0.01 * np.max(Gpr_inv)] = 0  # zero very small values
+    if fast:  # instead of pinv, get the Precision matrix directly via Cholesky
+        Lpr = cholesky(Gpr + 1e-5 * np.eye(Gpr.shape[0]), lower=True)
+        I = np.eye(Lpr.shape[0])
+        Lpr = solve_triangular(Lpr, I, lower=True).T
 
-    Lpr = cholesky(Gpr_inv, lower=False)
+    else:  # more accurate fallback to pinv, incl. if Gpr is singular
+        Gpr_inv = np.linalg.pinv(Gpr)
+        Lpr = cholesky(Gpr_inv, lower=False)
 
-    Lpr[D > 1.75] = 0  # zero values where distances are large
+    Lpr[D > dist_cutoff] = 0  # zero values where distances are large
 
     return Lpr, D, Gpr
 
@@ -428,7 +450,7 @@ def get_Gd(gsd1, gsd2, R=0.95):
     Gd[0,1] = Gd[1,0]
     return Gd
 
-def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, **kwargs):
+def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, fast=False, **kwargs):
 
     print('\r' + '\033[36m' + '[ EXPONENTIAL DISTANCE INVERSION ]' + '\033[0m')
 
@@ -447,7 +469,7 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, **kwargs)
     # Use external function to evaluate prior covariance
     print('Building Lpr ...', end="", flush=True)
     start_time = time.time()  # time the contribution
-    Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid)
+    Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid, fast=fast)
     Lpr = lam * Lpr0
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
