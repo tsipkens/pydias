@@ -435,7 +435,6 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, show_progress=False):
                 break
     
     # If did not converge after max iterations.
-    list(tqdm._instances)[-1].colour = 'yellow'
     print('\033[93m' + f'Exited Twomey loop at max iter.' + '\033[0m')
     
     return x
