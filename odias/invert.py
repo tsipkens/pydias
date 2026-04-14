@@ -430,6 +430,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, show_progress=False):
             mse = mean_sq_err(A, x, b)
             if mse < 0.01:
                 if show_progress:
+                    list(tqdm._instances)[-1].colour = 'green'
                     print('\033[93m' + f'Exited Twomey loop as mean square error reached: iter = {kk}.' + '\033[0m')
                 break
     
@@ -483,6 +484,7 @@ def twomark(A, b, n, xi, opt_smooth=2, Sf=1/300):
         # Check roughness of solution
         R_new = roughness(x)
         if R_new > R:  # Exit if roughness has stopped decreasing
+            list(tqdm._instances)[-1].colour = 'green'
             print('\033[93m' + f'Exited Twomey-Markowski loop because roughness increased: iter = {kk}.' + '\033[0m')
             x = x_temp  # Restore previous iteration
             break
