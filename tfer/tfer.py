@@ -1559,6 +1559,8 @@ def elpi(da, prop=None):
         K[ii, :] = t0 - B
         B = 1 - (1 - B) * (1 - t0)
 
+    K[K < 0] = 0  # ensure non-negativity of kernel
+
     return K, d50
 
 
