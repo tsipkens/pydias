@@ -3,14 +3,23 @@ import numpy as np
 
 from bidias import Grid
 
+# Import overlapping functions from odias.
+from odias.invert import tikhonov_engine, lsq
+
 import scipy.sparse as sp
-from scipy.sparse.linalg import lsqr, splu
-from scipy.linalg import cholesky, solve, lstsq, solve_triangular, inv
+from scipy.sparse.linalg import lsqr
+from scipy.linalg import cholesky, solve, solve_triangular
 from scipy.optimize import lsq_linear, nnls
 from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
 from scipy.sparse.csgraph import laplacian
 
-from tqdm import tqdm
+from scipy.ndimage import gaussian_filter
+from sklearn.neighbors import NearestNeighbors
+
+import numpy as np
+
+from autils.tools import tqdm2 as tqdm
 
 import time
 
@@ -48,49 +57,6 @@ def reducer(A, b):
 
 #     return xn
 
-
-def lsq(A, b, method=None, C=None, d=None):
-    if method == None:
-        method = 'osqp'
-
-    if method == 'nnls':
-        A = A.todense()
-        x = nnls(A, b)[0]
-        
-    elif method == 'solve':
-        A = A.todense()
-        x = solve(A.T @ A, (A.T @ b).T)
-
-    elif method in ['spsolve', 'algebraic']:
-        x = sp.linalg.spsolve(A.T @ A, (A.T @ b))
-
-    elif method == 'lsqr':
-        x = lsqr(A, b)[0]
-
-    elif method == 'lsq_linear':
-        res = lsq_linear(A, b, bounds=(0, np.inf))[0]
-        x = res['x']
-
-    # elif method == 'lstsq':
-    #     res = lsq_linear(A, b, bounds=(0, np.inf))[0]
-    #     x = res
-
-    elif method in ['cp', 'osqp']:
-        import cvxpy as cp  # import package
-
-        xc = cp.Variable(np.size(A, 1))
-        objective = cp.Minimize(cp.sum_squares(A @ xc - b))
-
-        if C is None:
-            constraints = [0 <= xc, xc <= np.inf]
-        else:
-            
-            constraints = [0 <= xc, xc <= np.inf, C @ xc == d]
-        prob = cp.Problem(objective, constraints)
-        prob.solve(solver='OSQP', eps_abs=1e-9)
-        x = xc.value
-
-    return x
 
 def apply_dirichlet(L, is_edge):
     """
@@ -360,33 +326,35 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     if Lpr0 == None:
         Lpr0, _, _ = tikhonov_lpr(order, nx, x_length, bc, grid=grid, anisotropy=anisotropy, variant=variant)
 
-    Lpr = lam * Lpr0
+    # Lpr = lam * Lpr0
 
-    # Lpr = Lpr[:, x_keep][x_keep[:-1], :]
-    # if 'C' in kwargs:
-    #     kwargs['C'] = kwargs['C'][:, x_keep]
+    # # Lpr = Lpr[:, x_keep][x_keep[:-1], :]
+    # # if 'C' in kwargs:
+    # #     kwargs['C'] = kwargs['C'][:, x_keep]
     
-    # Choose and execute solver
-    pr_length = Lpr.shape[0]
+    # # Choose and execute solver
+    # pr_length = Lpr.shape[0]
     
-    A_aug = sp.vstack((A, Lpr))
-    b_aug = np.concatenate([b, np.zeros(pr_length)])
+    # A_aug = sp.vstack((A, Lpr))
+    # b_aug = np.concatenate([b, np.zeros(pr_length)])
 
-    # Add extra condition zeroing regions where data suggests zero.
-    # Specifically, look at which data point most influences an element. 
-    # If b is zero for that element, add 0th-order Tikhonov. 
-    # if encourage_zeros:
-    #     not_to_zero = (b[np.argmax(A, axis=0)] != 0)[0,:]
+    # # Add extra condition zeroing regions where data suggests zero.
+    # # Specifically, look at which data point most influences an element. 
+    # # If b is zero for that element, add 0th-order Tikhonov. 
+    # # if encourage_zeros:
+    # #     not_to_zero = (b[np.argmax(A, axis=0)] != 0)[0,:]
 
-    #     Lpr_z, _, _ = tikhonov_lpr(order=0, nx=nx, x_length=x_length, grid=grid)
-    #     Lpr_z.tolil()[not_to_zero, :] = 0
-    #     pr_length_z = Lpr_z.shape[0]
+    # #     Lpr_z, _, _ = tikhonov_lpr(order=0, nx=nx, x_length=x_length, grid=grid)
+    # #     Lpr_z.tolil()[not_to_zero, :] = 0
+    # #     pr_length_z = Lpr_z.shape[0]
     
-    #     A_aug = sp.vstack((A_aug, lam / 3 * Lpr_z))
-    #     b_aug = np.concatenate([b_aug, np.zeros(pr_length_z)])
+    # #     A_aug = sp.vstack((A_aug, lam / 3 * Lpr_z))
+    # #     b_aug = np.concatenate([b_aug, np.zeros(pr_length_z)])
     
-    A_aug2 = sp.csc_matrix(A_aug)
-    x = lsq(A_aug2, b_aug, **kwargs)
+    # A_aug2 = sp.csc_matrix(A_aug)
+    # x = lsq(A_aug2, b_aug, **kwargs)
+
+    x, (A_aug, b_aug) = tikhonov_engine(A, b, lam, Lpr0, **kwargs)
 
     D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
 
@@ -439,6 +407,50 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None, dist_cutoff=1.75, fast=False):
     Lpr[D > dist_cutoff] = 0  # zero values where distances are large
 
     return Lpr, D, Gpr
+
+# def exp_dist_lpr_sparse(Gd, vec2, vec1, grid=None, dist_cutoff=1.75):
+#     # 1. Pre-process elements
+#     if hasattr(grid, 'elements'):
+#         el = grid.elements.copy()
+#         for ii in range(2):
+#             if grid.discrete[ii] == 'log':
+#                 el[:, ii] = np.log10(el[:, ii])
+#     else:
+#         el = np.log10(np.column_stack((vec1, vec2)))
+    
+#     # 2. Linear transformation (Whitening)
+#     # Transforming coordinates so Euclidean distance = Mahalanobis distance
+#     L_Gd = cholesky(Gd, lower=True)
+#     el_transformed = np.linalg.solve(L_Gd, el.T).T
+    
+#     # 3. Sparse Distance Calculation using KDTree
+#     # This replaces cdist and only finds neighbors within the cutoff
+#     tree = cKDTree(el_transformed)
+    
+#     # sparse_distance_matrix returns a coordinate format (COO) sparse matrix
+#     D_sparse = tree.sparse_distance_matrix(tree, max_distance=dist_cutoff, output_type='ndarray')
+    
+#     # D_sparse contains [row_indices, col_indices, distances]
+#     rows = D_sparse['i']
+#     cols = D_sparse['j']
+#     dist_values = D_sparse['v']
+    
+#     # 4. Compute Sparse Gpr (Covariance)
+#     # Gpr = exp(-D)
+#     gpr_values = np.exp(-dist_values)
+#     Gpr_sparse = sp.csr_matrix((gpr_values, (rows, cols)), shape=(len(el), len(el)))
+    
+#     # 5. Precision Matrix (Lpr)
+#     # NOTE: Calculating the inverse or Cholesky of a sparse matrix 
+#     # and keeping it sparse is mathematically complex. 
+#     # Usually, we approximate the precision matrix directly for spatial processes.
+    
+#     # If you strictly need the Lpr logic from your original code:
+#     Gpr_dense = Gpr_sparse.toarray()
+#     Lpr = cholesky(np.linalg.pinv(Gpr_dense), lower=False)
+#     Lpr[Gpr_dense == 0] = 0 # Enforce sparsity pattern
+    
+#     return sp.csr_matrix(Lpr), Gpr_sparse
 
 def get_Gd(gsd1, gsd2, R=0.95):
     """
@@ -539,5 +551,14 @@ def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e
     textdone(f' ({end_time - start_time:.2f} s)')
 
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
+
+    # -- Alternate code could be used if bypassing lsq and linearization --
+    # # x is the grid quantity we want to find
+    # x = cp.Variable(n_nodes)
+
+    # # D is the difference operator from the adjacency matrix
+    # objective = cp.Minimize(cp.sum_squares(A @ x - y) + lmbda * cp.norm(D @ x, 1))
+    # prob = cp.Problem(objective)
+    # prob.solve()
             
     return x

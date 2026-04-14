@@ -1,13 +1,14 @@
 
 import numpy as np
 
-from scipy.sparse import eye, diags, vstack, csr_matrix
-from scipy.optimize import lsq_linear, nnls, least_squares
+import scipy.sparse as sp
+from scipy.sparse import eye, diags
+from scipy.sparse.linalg import lsqr, spsolve
+from scipy.linalg import solve
+from scipy.optimize import lsq_linear, nnls, least_squares, minimize
 from scipy.interpolate import interp1d
 
-import cvxpy as cp
-
-from tqdm import tqdm
+from autils.tools import tqdm2 as tqdm
 
 
 def get_init(A, b, d, d_star):
@@ -70,7 +71,7 @@ def mean_sq_err(A, x, b):
     return sig
 
 
-def lsq(A, b, xi=None, method=None):
+def lsq(A, b, method=None, C=None, d=None):
     """
     Performs least-squares or equivalent optimization.
 
@@ -79,64 +80,85 @@ def lsq(A, b, xi=None, method=None):
               Model matrix
     b       : array-like
               Data vector
-    xi      : array-like, optional
-              Initial guess for solver. Default is None.
     method  : str, optional
               Solver to use. Options: 'non-neg', 'interior-point', ...
+    C       : array-like or sparse matrix
+              Linear constraint matrix
+    d       : array-like
+              Right-hand side of linear constraints
 
     Returns:
     x       : array-like
               Regularized estimate
-    D       : array-like or None
-              Inverse operator (x = D @ [b;0]). May be None if not calculated.
     """
-    
-    # Parse inputs
-    x_length = A.shape[1]
-    x_lb = np.zeros(x_length)  # Non-negativity bound
-    
-    if xi is not None:
-        xi = np.maximum(xi, x_lb)  # Enforce non-negativity constraint if xi is provided
-    else:
-        xi = np.zeros(x_length)
-
     if method == None:
         method = 'osqp'
-    
-    D = None  # Default value for D, unless computed by the solver
-    
-    # Choose solver and evaluate
-    if method == 'non-neg':  # Constrained non-negative least squares
-        if type(A) == csr_matrix:
-            A = A.todense()
-        
+
+    # Objective function for some optimization methods.
+    def objective_func(x, A, b):
+        # x has shape (n_particles, n_dimensions)
+        # We want to compute ||Ax - b||^2 for every particle
+        # Using np.dot(x, A.T) computes Ax for all particles simultaneously
+        residuals = np.dot(x, A.T) - b
+        return np.sum(residuals**2, axis=1)
+
+    # --------------- LEAST-SQUARES METHODS ---------------- #
+    if method == 'nnls':
+        A = A.todense()
         x = nnls(A, b)[0]
-        D = None
+        
+    elif method == 'solve':  # dense solve, not recommended
+        A = A.todense()
+        x = solve(A.T @ A, (A.T @ b).T)
+
+    elif method in ['spsolve', 'algebraic']:
+        x = spsolve(A.T @ A, (A.T @ b))
+
+    elif method == 'lsqr':
+        x = lsqr(A, b)[0]
 
     elif method == 'lsq_linear':
-        res = lsq_linear(A, b, bounds=(0, np.inf))
+        res = lsq_linear(A, b, bounds=(0, np.inf))[0]
         x = res['x']
-        
-    elif method == 'algebraic':  # Unconstrained least squares using matrix multiplication
-        D = np.linalg.pinv(A.T @ A) @ A.T  # Inverse operator
-        x = D @ b
-        
-    elif method == 'algebraic-inv':  # Unconstrained least squares using matrix inverse (less stable)
-        D = np.linalg.inv(A.T @ A) @ A.T  # Inverse operator
-        x = D @ b
 
-    elif method in ['cp', 'cvxpy', 'osqp']:
+    elif method in ['Nelder-Mead']:  # generally very slow
+        x = minimize(lambda x: objective_func(x, A, b), np.ones(A.shape[1]), 
+                     bounds=[(0, None)] * A.shape[1], method=method).x
+
+    elif method in ['cp', 'osqp']:
+        import cvxpy as cp  # import package
+
         xc = cp.Variable(np.size(A, 1))
         objective = cp.Minimize(cp.sum_squares(A @ xc - b))
-        constraints = [0 <= xc, xc <= np.inf]
+
+        if C is None:
+            constraints = [0 <= xc, xc <= np.inf]
+        else:
+            constraints = [0 <= xc, xc <= np.inf, C @ xc == d]
         prob = cp.Problem(objective, constraints)
-        prob.solve(solver='OSQP', eps_abs=1e-9)
+        prob.solve(solver='OSQP', eps_abs=1e-6)  # prev.: eps_abs=1e-9
         x = xc.value
+
+    elif method in ['pyswarms', 'particle-swarm']:
+        import pyswarms as ps
         
+        # Hyperparameters
+        options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9}
+        n_particles = 50
+        dimensions = A.shape[1]
+
+        # Initialize and run global best PSO
+        optimizer = ps.single.GlobalBestPSO(n_particles=n_particles, 
+                                            dimensions=dimensions, 
+                                            options=options)
+
+        # Pass A and b as extra arguments to the objective function.
+        cost, x = optimizer.optimize(objective_func, iters=500, A=A, b=b)
+
     else:
-        raise ValueError(f"Solver '{method}' is not recognized.")
-    
-    return x, D
+        raise ValueError(f'Method {method} not recognized.')
+
+    return x
 
 
 def tikhonov_lpr(order, x_length, bc=None):
@@ -217,16 +239,16 @@ def tikhonov_lpr(order, x_length, bc=None):
     elif order == 34:  # Combined 3rd and 4th order Tikhonov
         L3 = tikhonov_lpr(3, x_length, bc)
         L4 = tikhonov_lpr(4, x_length, bc)
-        L = vstack([L3, L4], format='lil')
+        L = sp.vstack([L3, L4], format='lil')
 
     else:
         raise ValueError("The specified order of Tikhonov is not available.")
 
-    L = csr_matrix(L)
+    L = sp.csr_matrix(L)
 
     return L
 
-def tikhonov(A, b, lam, order=1, bc=None, xi=None, method=None, Lpr0=None):
+def tikhonov(A, b, lam, order=1, bc=None, Lpr0=None, solve=True, **kwargs):
     """
     Performs inversion using various order Tikhonov regularization in 2D.
 
@@ -241,10 +263,6 @@ def tikhonov(A, b, lam, order=1, bc=None, xi=None, method=None, Lpr0=None):
               Order of regularization or pre-computed Tikhonov matrix structure
     bc      : scalar (optional)
               Boundary conditions
-    xi      : ndarray (optional)
-              Initial guess for the solver (default: zeros)
-    solver  : String (optional)
-              Type of least-squares solver (default: set in lsq(...))
 
     Returns:
     x       : ndarray
@@ -256,12 +274,7 @@ def tikhonov(A, b, lam, order=1, bc=None, xi=None, method=None, Lpr0=None):
     Lpr0    : ndarray
               Tikhonov matrix structure
     """
-
     n = A.shape[1]  # Length of x
-    n_stages = 0
-    
-    if xi is None:
-        xi = np.zeros(n)  # If initial guess is not provided, assume zeros
 
     # Skip this is Lpr0 is given
     if Lpr0 == None:
@@ -270,41 +283,47 @@ def tikhonov(A, b, lam, order=1, bc=None, xi=None, method=None, Lpr0=None):
 
         # Get Tikhonov smoothing matrix
         Lpr0 = tikhonov_lpr(order[0], n, bc)
+
+    # If solve flag is false, simply return Lpr0 without inverting system.
+    if not solve: return Lpr0
     
-    Lpr = lam * Lpr0  # Incorporate regularization parameter
+    x, (A_aug, b_aug) = tikhonov_engine(A, b, lam, Lpr0, **kwargs)  # compute solution
 
-    # Execute solver (default solver assumed to be least squares)
-    pr_length = Lpr0.shape[0]
-    A_aug = vstack([csr_matrix(A), csr_matrix(Lpr)])
+    return x, (A_aug, b_aug), None, Lpr0
+
+def tikhonov_engine(A, b, lam, Lpr0, **kwargs):
+    """
+    Common function for core Tikhonov method, after Lpr0 is computed.
+
+    Parameters:
+    A       : ndarray
+              Model matrix
+    b       : ndarray
+              Data
+    lam     : scalar or list
+              Regularization parameter(s)
+    Lpr0    : ndarray
+              Tikhonov prior matrix structure
+
+    Returns: 
+    x       : ndarray
+              Regularized estimate
+    sys     : tuple
+              System solved by least-squares.
+    """
+    Lpr = lam * Lpr0  # incorporate regularization parameter
+    pr_length = Lpr0.shape[0]  # get length of the prior from shape of Lpr0
+
+    # Build augmented system.
+    A_aug = sp.vstack([sp.csr_matrix(A), Lpr])
     b_aug = np.hstack([np.squeeze(b), np.zeros(pr_length)])
-    x, D = lsq(A_aug, b_aug, xi)
 
-    # Multiple stage Tikhonov
-    if n_stages > 1:
-        for ii in range(1, n_stages):
-            # Get Tikhonov smoothing matrix for the next stage
-            if len(order) > 0:
-                if len(bc) == 0:
-                    Lpr0 = tikhonov_lpr(order[ii], n)
-                else:
-                    Lpr0 = tikhonov_lpr(order[ii], n, bc[ii])
+    # Solve augmented system using least-squares.
+    x = lsq(A_aug, b_aug, **kwargs)
 
-            Lpr = lam[ii] * Lpr0  # Incorporate regularization parameter
+    # D = np.linalg.pinv(A_aug.toarray())  # would calculate explicit inverse operator
 
-            # Apply diagonal weight matrix D2 based on the solution from the previous stage
-            D2 = csr_matrix(np.diag(1. / np.maximum(np.abs(x), 0.01)))
-
-            # Solve again for the next stage
-            A_aug = vstack([csr_matrix(A), csr_matrix(Lpr @ D2)])
-            x, D = lsq(A_aug, b_aug, xi, method)
-
-    # Uncertainty quantification
-    if n_stages >= 4:
-        Gpo_inv = A.T @ A + Lpr.T @ Lpr
-        return x, D, Lpr0, Gpo_inv
-
-    return x, (A_aug, b_aug), D, Lpr0
-
+    return x, (A_aug, b_aug)
 
 def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
     """
@@ -332,11 +351,12 @@ def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
     Gpo_inv : ndarray
         Posterior inverse covariance matrix
     """
+    Lpr0 = tikhonov(A, b, lam0, solve=False, **kwargs)  # get Lpr0, to avoid recomputing each time. 
 
     # Define cost function computing the residual. 
     def min_fun(log10lam):
         lam = 10 ** log10lam[0]
-        x_est, *_ = tikhonov(A, b, lam, **kwargs)
+        x_est = tikhonov(A, b, lam, Lpr0=Lpr0, **kwargs)[0]
         return x0 - x_est
 
     # Initial guess in log10 space.
@@ -344,19 +364,18 @@ def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
 
     # Optimization.
     res = least_squares(min_fun, x0=np.array([lam1]), 
-                        verbose=0,
-                        max_nfev=20,
-                        diff_step=0.05)
+                        max_nfev=15, diff_step=0.05)  # verbose=0,
 
+    # Get optimized output.
     lambda_opt = 10 ** res.x[0]
 
     # Final solution using optimal lambda
-    x, _, Lpr, _ = tikhonov(A, b, lambda_opt, **kwargs)
+    x, _, _, _ = tikhonov(A, b, lambda_opt, Lpr0=Lpr0, **kwargs)
 
-    return x, lambda_opt, Lpr, None
+    return x, lambda_opt, None, Lpr0
 
 
-def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
+def twomey(A, b, xi=None, iter=100, f_sigma=True, show_progress=False):
     """
     Performs inversion using the iterative Twomey approach.
 
@@ -371,7 +390,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
         Number of iterations. Defaults to 100.
     f_sigma : bool, optional
         Flag to check for convergence based on mean square error. Defaults to True.
-    f_bar : bool, optional
+    show_progress : bool, optional
         Flag to display a progress bar. Defaults to False (not showing bar).
 
     Returns:
@@ -386,7 +405,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
     x = xi
 
     # Display progress bar if needed
-    if f_bar:
+    if show_progress:
         print('Twomey progress:')
     
     # Scaling factors
@@ -397,8 +416,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
     lam = 1  # factor to adjust step size in Twomey
     
     # Perform Twomey iterations
-    f_bar = not f_bar  # invert for input to tqdm
-    for kk in tqdm(range(1, iter + 1), disable=f_bar):
+    for kk in tqdm(range(1, iter + 1), disable=(not show_progress)):
         for ii in range(len(b)):
             if b[ii] != 0:
                 y = np.dot(A[ii, :], x)
@@ -411,7 +429,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, f_bar=False):
         if f_sigma:
             mse = mean_sq_err(A, x, b)
             if mse < 0.01:
-                if not f_bar:
+                if show_progress:
                     print('\033[93m' + f'Exited Twomey loop as mean square error reached: iter = {kk}.' + '\033[0m')
                 break
     
