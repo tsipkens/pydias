@@ -2,52 +2,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tqdm import tqdm
-
-# ANSI color codes
-GREEN = "\033[92m"
-BLUE = "\033[96m"
-GRAY = "\033[30m"  # alt. 90m
-RESET = "\033[0m"
-
-class tqdm2(tqdm):
-    def format_meter(self, n, total, elapsed, **kwargs):
-        if total:
-            frac = n / total
-            bar_length = 25
-
-            filled_len = int(bar_length * frac)
-            empty_len = bar_length - filled_len
-
-            if frac >= 1:
-                bar = (
-                    GREEN + "█" * filled_len + RESET +
-                    GRAY + "█" * empty_len + RESET
-                )
-            else:
-                bar = (
-                    BLUE + "█" * filled_len + RESET +
-                    GRAY + "█" * empty_len + RESET
-                )
-
-            # Percentage
-            percentage = f"{100 * frac:3.0f}%"
-
-            # Timing
-            rate = n / elapsed if elapsed > 0 else 0
-            remaining = (total - n) / rate if rate > 0 else 0
-
-            elapsed_str = self.format_interval(elapsed)
-            remaining_str = self.format_interval(remaining) if rate > 0 else "??:??"
-
-            return (
-                f"{percentage}|{bar}| "
-                f"[{n}/{total}] "
-                f"[{elapsed_str}<{remaining_str}]"
-            )
-        else:
-            return super().format_meter(n, total, elapsed, **kwargs)
-
 def rounds(x, sig_figs):
     """
     Rounds a number x to a specified number of significant figures.
