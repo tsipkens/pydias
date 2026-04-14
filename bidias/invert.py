@@ -4,7 +4,7 @@ import numpy as np
 from bidias import Grid
 
 # Import overlapping functions from odias.
-from odias.invert import tikhonov_engine, lsq
+import odias.invert as odias_invert
 
 import scipy.sparse as sp
 from scipy.sparse.linalg import lsqr
@@ -354,7 +354,7 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     # A_aug2 = sp.csc_matrix(A_aug)
     # x = lsq(A_aug2, b_aug, **kwargs)
 
-    x, (A_aug, b_aug) = tikhonov_engine(A, b, lam, Lpr0, **kwargs)
+    x, (A_aug, b_aug) = odias_invert.tikhonov_engine(A, b, lam, Lpr0, **kwargs)
 
     D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
 
@@ -495,7 +495,7 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, fast=Fals
     start_time = time.time()  # time the contribution
 
     A_aug2 = sp.csr_matrix(A_aug)
-    x = lsq(A_aug2, b_aug, **kwargs)
+    x = odias_invert.lsq(A_aug2, b_aug, **kwargs)
 
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
@@ -545,7 +545,7 @@ def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e
 
         #-- Choose and execute solver --------------------------------
         A_aug2 = sp.csr_matrix(A_aug)
-        x = lsq(A_aug2, b_aug, **kwargs)
+        x = odias_invert.lsq(A_aug2, b_aug, **kwargs)
 
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
@@ -562,3 +562,11 @@ def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e
     # prob.solve()
             
     return x
+
+
+def twomey(*args, **kwargs):
+    """
+    Twomey regularization, refers to odias method.
+    """
+    return odias_invert.twomey(*args, **kwargs)
+
