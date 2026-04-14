@@ -242,7 +242,7 @@ class Grid:
         """
         Marginalize the size distribution. 
         """
-        return np.nansum(self.reshape(self.dr()[0] * x), axis=axis)
+        return np.nansum(self.dr()[2-axis] * self.reshape(x), axis=axis)
 
     def dr(self):
         """
