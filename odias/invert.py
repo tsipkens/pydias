@@ -432,7 +432,7 @@ def twomey(A, b, xi=None, iter=100, f_sigma=True, show_progress=False):
                 if show_progress:
                     list(tqdm._instances)[-1].colour = 'green'
                     print('\033[93m' + f'Exited Twomey loop as mean square error reached: iter = {kk}.' + '\033[0m')
-                break
+                return x
     
     # If did not converge after max iterations.
     print('\033[93m' + f'Exited Twomey loop at max iter.' + '\033[0m')
