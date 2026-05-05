@@ -75,16 +75,13 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
             if spec[ii][0] == 'pma':
                 prop_p = spec[ii][2]
         
-        if mp_idx is None and dm_idx is None:
-            da = grid_i.elements[:, da_idx]
-            dm = autils.da_rhoeff2dm(da * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
-            mp = (np.pi/6) * 1e+3 * \
-                grid_i.elements[:, da_idx] ** 3 * 1e-9
-        
-        elif mp_idx is None:
-            mp = (np.pi/6) * grid_i.elements[:, rho_idx] * \
-                grid_i.elements[:, dm_idx] ** 3 * 1e-9
-            dm = grid_i.elements[:, dm_idx]
+        if mp_idx is None:
+            if dm_idx is None:
+                da = grid_i.elements[:, da_idx]  # then assume da_idx is available
+                dm = autils.da_rhoeff2dm(da * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
+            else:
+                dm = grid_i.elements[:, dm_idx]  # otherwise, extract dm from grid
+            mp = (np.pi/6) * grid_i.elements[:, rho_idx] * dm ** 3 * 1e-9  # now compute mass
             
         if da_idx is None:
             da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
