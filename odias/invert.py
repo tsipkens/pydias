@@ -183,7 +183,7 @@ def tikhonov_lpr(order, x_length, bc=None):
     """
     
     if bc is None:
-        bc = order  # Default to the same as the order if boundary condition not provided
+        bc = 0  # Default to the same as the order if boundary condition not provided
 
     # Choose between order of Tikhonov operator to generate.
     if order == 0:  # 0th order Tikhonov promotes small solutions
