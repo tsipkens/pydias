@@ -490,7 +490,7 @@ def fit(x, elements):
     return pha
 
 
-def fit_sample(x, edges):
+def fit_sample(x, edges, gen_plot=False):
     """
     Fit to the unimodal data by sampling and computing the covariance and means.
     """
@@ -513,13 +513,24 @@ def fit_sample(x, edges):
     iy, ix = np.divmod(idx, len(edges[0]))
     samples = np.column_stack((np.log10(edges[0])[ix], np.log10(edges[1])[iy]))
 
+    pha = Phantom(mu=np.average(samples, axis=0), Sig=np.cov(samples[:,0], samples[:,1]))
+
+    if gen_plot:
+        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]))
+        plt.scatter(10**(samples[:,0]), 
+                    10**(samples[:,1]), 1, c='w', alpha=0.01)
+        pha.overlay()
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.show()
+
     # ----------------------------------------------------
     # 2. Get covariance and means.
     # ----------------------------------------------------
-    return Phantom(mu=np.average(samples, axis=0), Sig=np.cov(samples[:,0], samples[:,1]))
+    return pha
 
 
-def fit_gmm(x, edges, n=1):
+def fit_gmm(x, edges, n=1, gen_plot=False):
     """
     Fit to the data by sampling and fitting a Gaussian mixture model.
     """
@@ -556,7 +567,7 @@ def fit_gmm(x, edges, n=1):
         n_components=2,
         covariance_type='full',
         n_init=10,           # multiple initializations for robustness
-        max_iter=500,
+        max_iter=400,
         random_state=42,
     )
     gmm.fit(samples)
@@ -586,5 +597,14 @@ def fit_gmm(x, edges, n=1):
         pha = Phantom(mu=real_means[0], Sig=real_covariances[0])
     else:
         pha = Phantoms(mu=real_means, Sig=real_covariances, w=gmm.weights_)
+
+    if gen_plot:
+        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]))
+        plt.scatter(10**(samples[:,0] * scaler.scale_[0] + scaler.mean_[0]), 
+                    10**(samples[:,1] * scaler.scale_[1] + scaler.mean_[1]), 1, c='w', alpha=0.01)
+        pha.overlay()
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.show()
 
     return pha
