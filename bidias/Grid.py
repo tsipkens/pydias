@@ -27,6 +27,7 @@ class Grid:
         """
         
         # Initiate properties and set some defaults.
+        discrete = ['lin' if item.lower() == 'linear' else item for item in discrete]  # convert to shorthand for linear dimensions
         self.discrete = discrete
         self.dim = 2
         self.type = type  # types for the grid (e.g., 'mp', 'dm', 'da', 'mrBC', 'rho')
@@ -40,6 +41,7 @@ class Grid:
         self.nodes_tr = [None] * self.dim  # transformed nodes (used for dr)
 
         self.elements = None
+        self.ielements = None  # elements in terms of index
         self.nelements = None
         self.nelements_tr = None
 
@@ -76,17 +78,20 @@ class Grid:
         # Generate nodes
         for ii in range(self.dim):
             if self.discrete[ii] == 'log':
-                r_m = np.exp((np.log(self.edges[ii][1:]) + np.log(self.edges[ii][:-1])) / 2)
+                r_m = np.exp((np.log(self.edges[ii][1:]) + np.log(self.edges[ii][:-1])) / 2)  # mid-point in log-space
                 self.nodes[ii] = np.concatenate([[np.exp(2 * np.log(self.edges[ii][0]) - np.log(r_m[0]))], r_m, [np.exp(2 * np.log(self.edges[ii][-1]) - np.log(r_m[-1]))]])
                 self.nodes_tr[ii] = np.log10(self.nodes[ii])
             elif self.discrete[ii] == 'lin':
-                r_m = (self.edges[ii][1:] + self.edges[ii][:-1]) / 2
+                r_m = (self.edges[ii][1:] + self.edges[ii][:-1]) / 2  # mid-point in linear space
                 self.nodes[ii] = np.concatenate([[2 * self.edges[ii][0] - r_m[0]], r_m, [2 * self.edges[ii][-1] - r_m[-1]]])
                 self.nodes_tr[ii] = self.nodes[ii]
 
         vec1 = np.meshgrid(self.edges[0], self.edges[1])
         self.elements = np.vstack([vec1[0].ravel(), vec1[1].ravel()]).T
         
+        ivec1 = np.meshgrid(np.arange(self.ne[0]), np.arange(self.ne[1]))
+        self.ielements = np.vstack([ivec1[0].ravel(), ivec1[1].ravel()]).T
+
         vec1 = np.meshgrid(self.nodes[0][:-1], self.nodes[1][:-1])
         vec2 = np.meshgrid(self.nodes[0][1:], self.nodes[1][1:])
         self.nelements = np.vstack([vec1[0].ravel(), vec2[0].ravel(), vec1[1].ravel(), vec2[1].ravel()]).T
@@ -210,17 +215,35 @@ class Grid:
     def adjacency(self, **kwargs):
         """Bridging function to static method."""
         return Grid.adjacency0(self.ne, **kwargs)
-    
+
     def isedge(self):
         """
         A function to compute which elements are at the edges of the grid domain.
         """
-        left = np.where(self.elements[:, 0] == self.edges[0][0])[0]  # edges on the left side of the grid
-        right = np.where(self.elements[:, 0] == self.edges[0][-1])[0]  # etc.
-        down = np.where(self.elements[:, 1] == self.edges[1][0])[0]
-        up = np.where(self.elements[:, 1] == self.edges[1][-1])[0]
+        pts = self.ielements
+        # A set of tuples is the fastest way to check existence in Python
+        index_set = set(map(tuple, pts))
+        
+        # Define the 4 cardinal shifts: Left, Right, Top, Bottom
+        # We use broadcasting to calculate all potential neighbor coords at once
+        shifts = [
+            pts + [-1, 0],  # Left
+            pts + [1, 0],   # Right
+            pts + [0, -1],  # Top
+            pts + [0, 1]    # Bottom
+        ]
+        
+        # Generate the boolean mask for each direction
+        # We use a list comprehension over the directions rather than the points
+        edge_types = np.array([
+            [tuple(neighbor) not in index_set for neighbor in shift]
+            for shift in shifts
+        ]).T  # Transpose to get (n, 4) shape
 
-        return np.concatenate((down, left, right, up)) # return combined indices
+        # Get indices where at least one direction is True
+        is_edge_indices = np.where(edge_types.any(axis=1))[0]
+
+        return is_edge_indices, edge_types
 
     def reshape(self, x):
         return x.reshape([self.ne[1], self.ne[0]])
@@ -501,6 +524,7 @@ class PartialGrid(Grid):
 
         # Update grid properties after truncation
         self.elements = self.elements[self.remaining, :]
+        self.ielements = self.ielements[self.remaining, :]
         self.nelements = self.nelements[self.remaining, :]
         self.nelements_tr = self.nelements_tr[self.remaining, :]
         self.Ne = self.elements.shape[0]
@@ -519,19 +543,19 @@ class PartialGrid(Grid):
 
         return adj
     
-    def isedge(self):
-        """
-        A function to compute which elements are at the edges of the grid domain.
-        """
-        # Identify elements next to the new edges.
-        adju = sp.triu(Grid.adjacency(self, 1), 2).tocsr()  # Get the upper triangle of the matrix with offset 2
-        missingedge = adju[:, self.missing].sum(axis=1).flatten().astype(bool)  # Check for adjacency to missing elements
-        missingedge = np.delete(missingedge, self.missing)  # Remove missing elements from the edge flagging
-        missingedge = np.where(missingedge.A1)[0]
+    # def isedge(self):
+    #     """
+    #     A function to compute which elements are at the edges of the grid domain.
+    #     """
+    #     # Identify elements next to the new edges.
+    #     adju = sp.triu(Grid.adjacency(self, 1), 2).tocsr()  # Get the upper triangle of the matrix with offset 2
+    #     missingedge = adju[:, self.missing].sum(axis=1).flatten().astype(bool)  # Check for adjacency to missing elements
+    #     missingedge = np.delete(missingedge, self.missing)  # Remove missing elements from the edge flagging
+    #     missingedge = np.where(missingedge.A1)[0]
 
-        # Finally, return the combination of the 
-        # original edge elements for full grid with the new edge elements.
-        return np.concatenate((Grid.isedge(self), missingedge))
+    #     # Finally, return the combination of the 
+    #     # original edge elements for full grid with the new edge elements.
+    #     return np.concatenate((Grid.isedge(self), missingedge))
     
     def reshape(self, x):
         x = self.partial2full(x)
