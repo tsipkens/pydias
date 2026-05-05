@@ -58,17 +58,12 @@ def reducer(A, b):
 #     return xn
 
 
-def apply_dirichlet(L, is_edge):
+def apply_dirichlet(L):
     """
     Apply Dirichlet boundary conditions given a list of edges.
     """
-    L = L.tolil() # Use LIL for efficient row manipulation
-    
-    for idx in is_edge:# Set the entire row to zeros first
-        L[idx, :] = 0  # zero the entire row
-        L[idx, idx] = 1.0  # set the diagonal to 1
-    
-    return L.tocsr() # convert back to CSR and return
+    L.setdiag(L.diagonal().max(), k=0)
+    return L
 
 
 # =========== TIKHONOV REGULARIZATION =========== #
@@ -110,30 +105,26 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
 
     # Interpret boundary condition. 
     # Convert to integers corresponding to which order derivative is zero.
-    if bc == 'dirichlet':
+    if str(bc).lower() == 'dirichlet':
         bc = 0
-    elif bc == 'nuemann':
+    elif str(bc).lower() == 'nuemann':
         bc = 1
     elif bc is None:
         bc = int(np.floor(order))  # by default, match boundary condition to order
     
     # ---- Get dimensions and adjacency ----
-    if not grid == None:  # if Grid or PartialGrid is given
-        nx = grid.ne[0]
-        ny = grid.ne[1]
-        x_length = np.prod(grid.ne)
-
-        adj = grid.adjacency(anisotropy=anisotropy)  # adjacency matrix
-        is_edge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
-
-    else:  # otherwise build adjacency matrix for full grid for compatibility
+    if grid == None:  # skip if Grid or PartialGrid is given
         if x_length % nx != 0 and order != 0:
             raise ValueError("x_length must be an integer multiple of n.")
-        
-        # Now build adjacency matrix. 
-        ny = np.int32(x_length / nx)
-        adj = Grid.Grid.adjacency0([nx, ny], anisotropy=anisotropy)  # use existing Grid method
-        is_edge = np.where(np.sum(adj, axis=1).A1 != 4)
+        grid = Grid.Grid(span=[[0.1,1],[0.1,1]], ne=[nx, x_length/nx])  # create generic grid (span doesn't matter)
+    
+    nx = grid.ne[0]  # extract grid properties
+    ny = grid.ne[1]
+    x_length = np.prod(grid.ne)
+
+    adj = grid.adjacency(anisotropy=anisotropy)  # adjacency matrix
+    is_edge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
+    # ---------------------------------------
 
     Lpr1 = None
     Lpr2 = None # default if not overwritten
@@ -154,7 +145,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
 
             # Modify based on boundary conditions.
             if bc == 1:
-                Lpr0 = Lpr0[:-1, :]  # remove trailing zeros
+                Lpr0 = Lpr0[:-1, :]  # only remove trailing zeros
                 
                 # To remove possible bending as edges. Remove anisotropy for edge cells.
                 target_rows = np.where(np.diff(Lpr0.indptr) == 2)[0]
@@ -163,7 +154,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
                 scale[target_rows] = 1.0 / diags[target_rows]  # adjust on only target rows
                 Lpr0 = sp.diags(scale) @ Lpr0
 
-            elif bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
+            elif bc == 0: Lpr0 = apply_dirichlet(Lpr0)
             else: raise ValueError("Boundary condition must be 0 (dirichlet) or 1 (nuemann).")
 
         elif variant == 1:
@@ -195,7 +186,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
             Lpr0 = laplacian(adj)  # use existing Laplacian function
 
             # Modify based on boundary conditions.
-            if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
+            if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
         # Case 1: difference in both dimensions
         elif variant == 1:
@@ -215,7 +206,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
             raise ValueError("Variant not available.")
 
         # Modify based on boundary conditions.
-        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
     elif order == 3:
         # 3rd order derivative
@@ -234,7 +225,7 @@ def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0,
         Lpr0 = Lpr1 + Lpr2
 
         # Modify based on boundary conditions.
-        if bc == 0: Lpr0 = apply_dirichlet(Lpr0, is_edge)
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
     else:
         if 1 < order < 2:
@@ -316,9 +307,6 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     if order is None:
         order = 1  # Default to 1st order if not specified
 
-    if bc is None:
-        bc = 0
-
     if xi is None:
         xi = np.zeros(x_length)
 
@@ -372,7 +360,7 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
 
 
 # =========== EXP. DISTANCE REGULARIZATION =========== #
-def exp_dist_lpr(Gd, vec2, vec1, grid=None, dist_cutoff=1.75, fast=False):
+def exp_dist_lpr(Gd, vec2=None, vec1=None, grid=None, dist_cutoff=1.75, fast=False):
     # 1. Pre-process elements efficiently
     if hasattr(grid, 'elements'):
         el = grid.elements.copy()
@@ -380,7 +368,6 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None, dist_cutoff=1.75, fast=False):
             if grid.discrete[ii] == 'log':
                 el[:, ii] = np.log10(el[:, ii])
     else:
-        # Avoid hstack if possible, but keeping logic consistent
         el = np.log10(np.column_stack((vec1, vec2)))
     
     #-- Compute Mahalanobis distances between elements -----------------------#
@@ -452,6 +439,66 @@ def exp_dist_lpr(Gd, vec2, vec1, grid=None, dist_cutoff=1.75, fast=False):
     
 #     return sp.csr_matrix(Lpr), Gpr_sparse
 
+def exp_dist_lpr_s21(Gd, sd=1.0, vec2=None, vec1=None, grid=None, dist_cutoff=1.75, fast=False):
+    """
+    Special exponential distance Lpr for charging problem that has varying s2|1.
+    Corresponds to varying amount of correlation across the domain.
+    """
+    
+    # Pre-process elements efficiently
+    if hasattr(grid, 'elements'):
+        el = grid.elements.copy()
+        for ii in range(2):
+            el[:, ii] = np.log10(el[:, ii])
+    else:
+        # Avoid hstack if possible, but keeping logic consistent
+        el = np.log10(np.column_stack((vec1, vec2)))
+    
+    #-- Compute Mahalanobis distances between elements -----------------------#
+    # Extract Gd components.
+    g11, g22, g12 = Gd[0, 0], Gd[1, 1], Gd[0, 1]
+    sgn = np.sign(g12) # Direction of correlation
+
+    # Define s2|1 as a function. Wider at small charge states. 
+    y = el[:, 1]  # for function of second dimension
+    # s21 = np.sqrt(g22 - g12**2 / g11)  # default condition sd.
+    s21_vec = np.log(1 / (1 - sd / 10**y))  # function for conditional width
+
+    # g12 varies to satisfy the s2|1 requirement
+    # Note: As long as s21_vec is constant, g12_vec will be constant and equal to g12
+    # g12 = sgn * sqrt( g11 * (g22 - s2|1**2) )
+    g12_vec = sgn * np.sqrt(np.maximum(g11 * (g22 - s21_vec**2), 0))
+
+    # Pairwise differences for both dimensions.
+    dx = el[:, 0][:, np.newaxis] - el[:, 0][np.newaxis, :]
+    dy = el[:, 1][:, np.newaxis] - el[:, 1][np.newaxis, :]
+
+    # Symmetric averaging of the varying component.
+    g12_avg = 0.5 * (g12_vec[:, np.newaxis] + g12_vec[np.newaxis, :])
+
+    # Calculate local determinant and Mahalanobis distance.
+    det_Gd = g11 * g22 - g12_avg**2
+    D2 = (g22 * dx**2 - 2 * g12_avg * dx * dy + g11 * dy**2) / det_Gd
+    D = np.sqrt(np.maximum(D2, 0))
+    # -------------------------------------------------
+
+    # #-- Compute prior covariance matrix --------------------------------------#
+    # Gpr is a positive definite kernel (Squared Exponential/Exponential)
+    Gpr = np.exp(-D)
+
+    if fast:  # instead of pinv, get the Precision matrix directly via Cholesky
+        Lpr = cholesky(Gpr + 1e-5 * np.eye(Gpr.shape[0]), lower=True)
+        I = np.eye(Lpr.shape[0])
+        Lpr = solve_triangular(Lpr, I, lower=True).T
+
+    else:  # more accurate fallback to pinv, incl. if Gpr is singular
+        Gpr_inv = np.linalg.pinv(Gpr)
+        Lpr = cholesky(Gpr_inv, lower=False)
+
+    Lpr[D > dist_cutoff] = 0  # zero values where distances are large
+
+    return Lpr, D, Gpr
+
 def get_Gd(gsd1, gsd2, R=0.95):
     """
     Build covariance matrix from two correlation lengths (given as GSDs) and a correlation.
@@ -462,32 +509,36 @@ def get_Gd(gsd1, gsd2, R=0.95):
     Gd[0,1] = Gd[1,0]
     return Gd
 
-def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, fast=False, **kwargs):
+def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, Lpr0=None, fast=False, **kwargs):
 
     print('\r' + '\033[36m' + '[ EXPONENTIAL DISTANCE INVERSION ]' + '\033[0m')
 
     A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
 
+    x_length = A.shape[1]
+
     if vec1 is None:
         vec1 = []
 
-    x_length = A.shape[1]
+    # Compute Lpr0 if not given.
+    # Can be bypassed by pre-computing Lpr0.
+    if Lpr0 is None:
+        #-- Validate Gd input -------------------------------------#
+        if Gd[0, 1] / np.sqrt(Gd[0, 0] * Gd[1, 1]) >= 1:
+            raise ValueError('Correlation greater than 1.')
+        #----------------------------------------------------------#
 
-    #-- Parse inputs ---------------------------------------------#
-    if Gd[0, 1] / np.sqrt(Gd[0, 0] * Gd[1, 1]) >= 1:
-        raise ValueError('Correlation greater than 1.')
-    #-------------------------------------------------------------#
+        # Use external function to evaluate prior covariance
+        print('Building Lpr ...', end="", flush=True)
+        start_time = time.time()  # time the contribution
+        Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid, fast=fast)
+        end_time = time.time()
+        textdone(f' ({end_time - start_time:.2f} s)')
 
-    # Use external function to evaluate prior covariance
-    print('Building Lpr ...', end="", flush=True)
-    start_time = time.time()  # time the contribution
-    Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid, fast=fast)
-    Lpr = lam * Lpr0
-    end_time = time.time()
-    textdone(f' ({end_time - start_time:.2f} s)')
+    Lpr = lam * Lpr0  # scale by regularization parameter
 
     # Augment data with prior matrix.
-    A_aug = sp.vstack([A, Lpr]).todense()
+    A_aug = sp.vstack([A, Lpr])
     b_aug = np.hstack([b, np.zeros(x_length)])
 
     #-- Choose and execute solver --------------------------------#
