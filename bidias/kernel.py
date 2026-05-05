@@ -67,7 +67,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     mrbc_idx = check_type(type, 'mrbc')
     frbc_idx = check_type(type, 'frbc')
     
-    # MASS CHECK.
+    # ------- MASS CHECK --------
     # Unpack grid elements for transfer function evaluation.
     mp = None
     if rho_idx is not None:
@@ -92,7 +92,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     elif mp_idx is not None:
         mp = grid_i.elements[:, mp_idx]
     
-    # MOBILITY CHECK.
+    # -------- MOBILITY CHECK --------
     # Handle cases where mobility diameter isn't given (required for PMA/charging).
     if dm_idx is None:
         # OPTION 1: Use da and mp to compute dm if available
@@ -112,7 +112,13 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     else:  # otherwise use explicit mobility diameter dimension
         dm = grid_i.elements[:, dm_idx]
 
-    # MRBC CHECK.
+    # -------- AERODYNAMIC CHECK --------
+    if da_idx is not None:
+        da = grid_i.elements[:, da_idx]
+    elif mp is not None:
+        da = autils.dm_mp2da(dm * 1e-9, mp * 1e-18) * 1e9
+
+    # -------- MRBC CHECK --------
     # Handle cases where mrbc is not given. Only relevant to SP2.
     if mrbc_idx is None:
         if frbc_idx is not None:  # then, convert from frbc
@@ -122,17 +128,11 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     else:  # otherwise use explicit mrbc dimension
         mrbc = grid_i.elements[:, mrbc_idx]
 
-    # AERODYNAMIC CHECK.
-    if da_idx is not None:
-        da = grid_i.elements[:, da_idx]
-    elif mp is not None:
-        da = autils.dm_mp2da(dm * 1e-9, mp * 1e-18) * 1e9
-
-    # Loop over classifiers to compute Lambda
-    for ii in range(nc):
+    # -------- PROCEED TO BUILD KERNEL --------
+    for ii in range(nc):  # loop over classifiers
         classifier = spec[ii][0]
         
-        if classifier == 'charger':
+        if classifier == 'charger':  # add charger and charge fractions
             print('Computing charger contribution ...', end="", flush=True)
             
             d, idx = np.unique(dm, return_inverse=True)
@@ -151,7 +151,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
 
             textdone()
         
-        elif classifier in ['dma', 'smps']:
+        elif classifier in ['dma', 'smps']:  # differential mobility analyzer
             print('Computing DMA contribution ...', end="", flush=True)
 
             d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
@@ -164,7 +164,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
 
             textdone()
         
-        elif classifier == 'pma':
+        elif classifier == 'pma':  # particle mass analyzer (CPMA/APM)
             print('Computing PMA contribution ...', end="", flush=True)
 
             sp = spec[ii][1]
@@ -192,7 +192,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
 
             textdone()
         
-        elif classifier in ['sp2', 'bin']:
+        elif classifier in ['sp2', 'bin']:  # binned contributions (also used for SP2)
             print('Computing binned contribution ...', end="", flush=True)
 
             if classifier == 'sp2':
@@ -228,7 +228,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
 
             textdone()
 
-        elif classifier == 'aac':
+        elif classifier == 'aac':  # aerodynamic classifier (e.g., AAC)
             print('Computing AAC contribution ....', end="", flush=True)
             if isinstance(spec[ii][1], np.ndarray):
                 d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
@@ -280,6 +280,10 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
 
 
 def build_charge(grid_i, prop_dma=None, grid_b=None):
+    """
+    Wrapper to generate code for a kernel to invert the charge distributions 
+    instead of the size distribution.
+    """
 
     z = grid_i.edges[check_type(grid_i.type, 'z')]
     d1 = grid_b.elements[:, check_type(grid_b.type, 'dstar1')]
