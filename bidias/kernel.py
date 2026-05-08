@@ -295,8 +295,8 @@ def build_charge(grid_i, prop_dma=None, grid_b=None):
     A2d = np.zeros(A2c.shape[:2])
 
     for ii in range(A2c.shape[1]):
-        idx = grid_i.elements[ii, 1]
-        A2d[:, ii] = A2c[:, ii, int(idx)-1]
+        z_ii = int(grid_i.elements[ii, 1])
+        A2d[:, ii] = A2c[:, ii, np.where(z == z_ii)[0][0]]
 
     A = A1 * A2d
 
