@@ -2,11 +2,12 @@
 import numpy as np
 
 import scipy.sparse as sp
-from scipy.sparse import eye, diags
+from scipy.sparse import eye, diags, csc_matrix
 from scipy.sparse.linalg import lsqr, spsolve
 from scipy.linalg import solve
-from scipy.optimize import lsq_linear, nnls, least_squares, minimize
+from scipy.optimize import lsq_linear, nnls, least_squares, minimize, Bounds
 from scipy.interpolate import interp1d
+import osqp
 
 from autils.tools import tqdm2 as tqdm
 
@@ -71,7 +72,7 @@ def mean_sq_err(A, x, b):
     return sig
 
 
-def lsq(A, b, method=None, C=None, d=None):
+def lsq(A, b, method=None, C=None, d=None, Lx=None):
     """
     Performs least-squares or equivalent optimization.
 
@@ -125,19 +126,56 @@ def lsq(A, b, method=None, C=None, d=None):
         x = minimize(lambda x: objective_func(x, A, b), np.ones(A.shape[1]), 
                      bounds=[(0, None)] * A.shape[1], method=method).x
 
-    elif method in ['cp', 'osqp']:
+    elif method in ['osqp0']:
+        m, n = A.shape
+        
+        # Setup the Quadratic Program: 0.5*x'Px + q'x
+        # P = A'A, q = -A'b
+        # OSQP requires P to be a Sparse matrix in CSC format
+        P = csc_matrix(A.T @ A)
+        q = -(A.T @ b)
+        
+        # Non-negative constraint: 0 <= I*x < inf
+        # This is how dedicated solvers handle bounds
+        A_constraints = eye(n, format='csc')
+        lower_bounds = np.zeros(n)
+        upper_bounds = np.full(n, np.inf)
+        
+        # Initialize Solver
+        prob = osqp.OSQP()
+        
+        # Setup and solve with MATLAB-like tolerances
+        prob.setup(P, q, A_constraints, lower_bounds, upper_bounds, 
+                alpha=1.0, 
+                eps_abs=1e-8, 
+                eps_rel=1e-8, 
+                verbose=False)
+        res = prob.solve()
+        
+        return res.x
+
+    elif method in ['cp', 'osqp', 'ecos', 'cvxopt']:
         import cvxpy as cp  # import package
-
-        xc = cp.Variable(np.size(A, 1))
-        objective = cp.Minimize(cp.sum_squares(A @ xc - b))
-
-        if C is None:
-            constraints = [0 <= xc, xc <= np.inf]
+        
+        n = A.shape[1]  # get shape of x
+    
+        xc = cp.Variable(n, nonneg=True)  # create non-negative values (instead of constraint)
+        
+        if Lx is not None:  # objective function
+            objective = cp.Minimize(cp.sum_squares(A @ xc - b) + cp.sum_squares(Lx @ xc))
         else:
-            constraints = [0 <= xc, xc <= np.inf, C @ xc == d]
+            objective = cp.Minimize(cp.sum_squares(A @ xc - b))
+
+        constraints = [C @ xc == d] if C is not None else []  # constraints, if provided
+        
         prob = cp.Problem(objective, constraints)
-        prob.solve(solver='OSQP', eps_abs=1e-6)  # prev.: eps_abs=1e-9
-        x = xc.value
+        
+        # Solve the problem.
+        prob.solve(solver='OSQP', eps_abs=1e-6, eps_rel=1e-6, adaptive_rho=True, scaling=100)
+        # prob.solve(solver='CVXOPT', feastol=1e-6, abstol=1e-6, reltol=1e-6)
+        # prob.solve(solver='ECOS', abstol=1e-8, reltol=1e-8)
+        
+        return xc.value
 
     elif method in ['pyswarms', 'particle-swarm']:
         import pyswarms as ps
@@ -157,6 +195,37 @@ def lsq(A, b, method=None, C=None, d=None):
 
     else:
         raise ValueError(f'Method {method} not recognized.')
+
+    return x
+
+def regularization_engine(A, b, lam, Lpr0, **kwargs):
+    """
+    Common function for core Tikhonov method, after Lpr0 is computed.
+
+    Parameters:
+    A       : ndarray
+              Model matrix
+    b       : ndarray
+              Data
+    lam     : scalar or list
+              Regularization parameter(s)
+    Lpr0    : ndarray
+              Prior matrix structure
+
+    Returns: 
+    x       : ndarray
+              Regularized estimate
+    """
+    Lpr = lam * Lpr0  # incorporate regularization parameter
+    pr_length = Lpr0.shape[0]  # get length of the prior from shape of Lpr0
+
+    # Build augmented system.
+    A_aug = sp.vstack([sp.csr_matrix(A), Lpr])
+    b_aug = np.hstack([np.squeeze(b), np.zeros(pr_length)])
+
+    # Solve augmented system using least-squares.
+    x = lsq(A_aug, b_aug, **kwargs)
+    # x = lsq(A, b, Lx=Lpr, **kwargs)
 
     return x
 
@@ -287,43 +356,9 @@ def tikhonov(A, b, lam, order=1, bc=None, Lpr0=None, solve=True, **kwargs):
     # If solve flag is false, simply return Lpr0 without inverting system.
     if not solve: return Lpr0
     
-    x, (A_aug, b_aug) = tikhonov_engine(A, b, lam, Lpr0, **kwargs)  # compute solution
+    x = regularization_engine(A, b, lam, Lpr0, **kwargs)  # compute solution
 
-    return x, (A_aug, b_aug), None, Lpr0
-
-def tikhonov_engine(A, b, lam, Lpr0, **kwargs):
-    """
-    Common function for core Tikhonov method, after Lpr0 is computed.
-
-    Parameters:
-    A       : ndarray
-              Model matrix
-    b       : ndarray
-              Data
-    lam     : scalar or list
-              Regularization parameter(s)
-    Lpr0    : ndarray
-              Tikhonov prior matrix structure
-
-    Returns: 
-    x       : ndarray
-              Regularized estimate
-    sys     : tuple
-              System solved by least-squares.
-    """
-    Lpr = lam * Lpr0  # incorporate regularization parameter
-    pr_length = Lpr0.shape[0]  # get length of the prior from shape of Lpr0
-
-    # Build augmented system.
-    A_aug = sp.vstack([sp.csr_matrix(A), Lpr])
-    b_aug = np.hstack([np.squeeze(b), np.zeros(pr_length)])
-
-    # Solve augmented system using least-squares.
-    x = lsq(A_aug, b_aug, **kwargs)
-
-    # D = np.linalg.pinv(A_aug.toarray())  # would calculate explicit inverse operator
-
-    return x, (A_aug, b_aug)
+    return x, None, None, Lpr0
 
 def tikhonov_op(A, b, x0, lam0=1e3, **kwargs):
     """

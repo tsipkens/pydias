@@ -299,8 +299,6 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
 
     A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
 
-    start_time = time.time() # enables timing
-
     x_length = A.shape[1]  # get x_length from A matrix
 
     # Parse inputs
@@ -314,43 +312,18 @@ def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=N
     if Lpr0 == None:
         Lpr0, _, _ = tikhonov_lpr(order, nx, x_length, bc, grid=grid, anisotropy=anisotropy, variant=variant)
 
-    # Lpr = lam * Lpr0
+    #-- Choose and execute solver --------------------------------#
+    start_time = time.time() # enables timing
 
-    # # Lpr = Lpr[:, x_keep][x_keep[:-1], :]
-    # # if 'C' in kwargs:
-    # #     kwargs['C'] = kwargs['C'][:, x_keep]
-    
-    # # Choose and execute solver
-    # pr_length = Lpr.shape[0]
-    
-    # A_aug = sp.vstack((A, Lpr))
-    # b_aug = np.concatenate([b, np.zeros(pr_length)])
-
-    # # Add extra condition zeroing regions where data suggests zero.
-    # # Specifically, look at which data point most influences an element. 
-    # # If b is zero for that element, add 0th-order Tikhonov. 
-    # # if encourage_zeros:
-    # #     not_to_zero = (b[np.argmax(A, axis=0)] != 0)[0,:]
-
-    # #     Lpr_z, _, _ = tikhonov_lpr(order=0, nx=nx, x_length=x_length, grid=grid)
-    # #     Lpr_z.tolil()[not_to_zero, :] = 0
-    # #     pr_length_z = Lpr_z.shape[0]
-    
-    # #     A_aug = sp.vstack((A_aug, lam / 3 * Lpr_z))
-    # #     b_aug = np.concatenate([b_aug, np.zeros(pr_length_z)])
-    
-    # A_aug2 = sp.csc_matrix(A_aug)
-    # x = lsq(A_aug2, b_aug, **kwargs)
-
-    x, (A_aug, b_aug) = odias_invert.tikhonov_engine(A, b, lam, Lpr0, **kwargs)
-
-    D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
-
-    # Uncertainty quantification
-    Gpo_inv = None
+    x = odias_invert.regularization_engine(A, b, lam, Lpr0, **kwargs)
 
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
+    #-------------------------------------------------------------#
+
+    # Uncertainty quantification
+    D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
+    Gpo_inv = None
 
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
@@ -535,27 +508,20 @@ def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, Lpr0=None
         end_time = time.time()
         textdone(f' ({end_time - start_time:.2f} s)')
 
-    Lpr = lam * Lpr0  # scale by regularization parameter
-
-    # Augment data with prior matrix.
-    A_aug = sp.vstack([A, Lpr])
-    b_aug = np.hstack([b, np.zeros(x_length)])
-
     #-- Choose and execute solver --------------------------------#
     print('Inverting system ...', end="", flush=True)
     start_time = time.time()  # time the contribution
 
-    A_aug2 = sp.csr_matrix(A_aug)
-    x = odias_invert.lsq(A_aug2, b_aug, **kwargs)
+    x = odias_invert.regularization_engine(A, b, lam, Lpr0, **kwargs)
 
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
-
-    D = None  # inverse operator placeholder (modify based on the logic)
+    #-------------------------------------------------------------#
 
     #-- Uncertainty quantification -------------------------------#
+    D = None  # inverse operator placeholder (modify based on the logic)
     if Gd is not None:
-        Gpo_inv = A.T @ A + Lpr.T @ Lpr
+        Gpo_inv = A.T @ A + lam**2 * Lpr0.T @ Lpr0
     else:
         Gpo_inv = None
 
