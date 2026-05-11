@@ -276,7 +276,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     return A, Ac
 
 
-def build_charge(grid_i, prop_dma=None, grid_b=None):
+def build_charge(grid_i, prop_dma=None, grid_b=None, z1=None):
     """
     Wrapper to generate code for a kernel to invert the charge distributions 
     instead of the size distribution.
@@ -287,7 +287,7 @@ def build_charge(grid_i, prop_dma=None, grid_b=None):
     d2 = grid_b.elements[:, check_type(grid_b.type, 'dstar2')]
 
     # -- First classifier --
-    A1, _ = build(grid_i, [['dma', d1, prop_dma], ['charger']], z)
+    A1, _ = build(grid_i, [['dma', d1, prop_dma], ['charger']], z1)
 
     # -- Second classifier --
     _, A2c = build(grid_i, [['dma', d2, prop_dma]], z)
