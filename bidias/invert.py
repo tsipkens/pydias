@@ -434,8 +434,7 @@ def exp_dist_lpr_s21(Gd, sd=1.0, vec2=None, vec1=None, grid=None, dist_cutoff=1.
 
     # Define s2|1 as a function. Wider at small charge states. 
     y = el[:, 1]  # for function of second dimension
-    # s21 = np.sqrt(g22 - g12**2 / g11)  # default condition sd.
-    s21_vec = np.log(1 / (1 - sd / 10**y))  # function for conditional width
+    s21_vec = np.maximum(np.log10(1 / (1 - sd / 10**y)), 0)  # function for conditional width
 
     # g12 varies to satisfy the s2|1 requirement
     # Note: As long as s21_vec is constant, g12_vec will be constant and equal to g12
