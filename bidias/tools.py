@@ -140,3 +140,50 @@ def get_transform(spec:str):
     #     new_type = 'rho'
 
     return fun, new_type, T, c0
+
+
+from sklearn.cluster import DBSCAN
+def snap_to_grid(points):
+    pts = np.array(points)
+    snapped_pts = np.empty_like(pts)
+    indices_2d = np.empty_like(pts, dtype=int)
+    edges = []
+
+    for ii in range(2):  # 0 for X, 1 for Y
+        axis_data = pts[:, ii].reshape(-1, 1)
+        
+        # 1. Automatically determine epsilon (eps)
+        # Sort and find gaps to estimate the noise level
+        sorted_coords = np.sort(pts[:, ii])
+        diffs = np.diff(sorted_coords)
+        valid_diffs = diffs[diffs > 1e-8]
+        
+        # eps should be larger than jitter but smaller than grid spacing
+        eps = (np.max(axis_data) - np.min(axis_data)) / 500
+        
+        # 2. Run DBSCAN
+        # min_samples=1 ensures every point gets a cluster (unless we want to filter noise)
+        db = DBSCAN(eps=eps, min_samples=1).fit(axis_data)
+        labels = db.labels_
+        
+        # 3. Calculate cluster centers and snap points
+        unique_labels = np.unique(labels)
+        cluster_means = {}
+        
+        for label in unique_labels:
+            if label == -1: continue # Handle noise if min_samples > 1
+            mask = (labels == label)
+            cluster_means[label] = np.mean(axis_data[mask])
+            snapped_pts[mask, ii] = cluster_means[label]
+
+        # 4. Map to 2D Indices
+        # We sort the cluster centers to ensure indices follow spatial order
+        sorted_centers = np.sort(list(cluster_means.values()))
+        edges.append(sorted_centers)
+        indices_2d[:, ii] = np.searchsorted(sorted_centers, snapped_pts[:, ii])
+
+    # 5. Calculate Linear Index (Row-Major: row * width + col)
+    num_cols = len(edges[0])
+    linear_indices = (indices_2d[:, 1] * num_cols) + indices_2d[:, 0]
+
+    return snapped_pts, indices_2d, linear_indices, edges
