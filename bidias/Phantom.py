@@ -62,6 +62,11 @@ class Phantoms:
         plt.yscale('log')
         plt.gca().set_box_aspect(1)
 
+    def overlay(self, *args, **kwargs):
+        """A function to bridge the general overlay for the current phantom."""
+        for ii in range(self.nmodes):
+            Phantom.overlay(self.modes[ii], *args, **kwargs)
+
 
 class Phantom:
     def __init__(self, spec=None, mu=None, Sig=None, p=None, massmob=None):
@@ -451,9 +456,9 @@ def fit(x, elements):
     """
 
     # Flatten data
+    f = np.asarray(x).ravel()  # NOTE: swap x --> f.
     x = np.log10(elements[:,0].ravel())
     y = np.log10(elements[:,1].ravel())
-    f = np.asarray(x).ravel()
 
     # Initial estimates from weighted moments
     w = f / (f.sum() + 1e-12)
@@ -490,36 +495,65 @@ def fit(x, elements):
     return pha
 
 
+
+def sampler(x, edges, N=20000):
+    """
+    Common sampler for below methods. N is the number of samples.
+    Samples are jittered within their respective grid cells.
+    """
+    edges = edges.copy()
+    edges[0] = np.log10(edges[0])
+    edges[1] = np.log10(edges[1])
+
+    # Sample points from the discretized PDF
+    flat_pdf = x / x.sum()  # normalize to ensure it's a proper PDF
+    cdf = np.cumsum(flat_pdf)  # get cdf
+    
+    # Sampling.
+    u = np.random.rand(N)  # draw uniform random values in [0,1]
+    idx = np.searchsorted(cdf, u)  # find grid-cell indices
+
+    # Convert 1D indices → 2D grid coordinates
+    iy, ix = np.divmod(idx, len(edges[0]))
+    
+    # 1. Get the base linear coordinates of the sampled bins
+    x_base = edges[0][ix]
+    y_base = edges[1][iy]
+    
+    # 2. Calculate the width of each bin in the linear scale
+    # (Assumes edges define the left/lower bounds of the bins)
+    dx = np.diff(edges[0])[0]  # If grid is uniform
+    dy = np.diff(edges[1])[0]
+    
+    # Note: If your grid spacing is non-uniform, use these instead:
+    # dx = edges[0][ix + 1] - edges[0][ix]
+    # dy = edges[1][iy + 1] - edges[1][iy]
+
+    # 3. Generate uniform random jitter between [-0.5, 0.5) for each sample
+    x_jitter = (np.random.rand(N) - 0.5) * dx
+    y_jitter = (np.random.rand(N) - 0.5) * dy
+    
+    # 4. Add jitter to the base positions and return log10 coordinates
+    sampled_x_linear = x_base + x_jitter
+    sampled_y_linear = y_base + y_jitter
+
+    return np.column_stack((sampled_x_linear, sampled_y_linear))
+
 def fit_sample(x, edges, gen_plot=False):
     """
     Fit to the unimodal data by sampling and computing the covariance and means.
     """
-
-    # ----------------------------------------------------
-    # 1. Sample points from the discretized PDF
-    # ----------------------------------------------------
-    flat_pdf = x / x.sum()  # normalize to ensure it's a proper PDF
-    cdf = np.cumsum(flat_pdf)  # get cdf
-    
-    N = 20000 # number of samples
-
-    # Draw uniform random values in [0,1]
-    u = np.random.rand(N)
-
-    # Find grid-cell indices corresponding to sampled CDF positions
-    idx = np.searchsorted(cdf, u)
-
-    # Convert 1D indices → 2D grid coordinates
-    iy, ix = np.divmod(idx, len(edges[0]))
-    samples = np.column_stack((np.log10(edges[0])[ix], np.log10(edges[1])[iy]))
+    samples = sampler(x, edges)  # generate samples representing the distribution
 
     pha = Phantom(mu=np.average(samples, axis=0), Sig=np.cov(samples[:,0], samples[:,1]))
 
     if gen_plot:
-        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]))
+        plt.figure(figsize=(10,10))
+        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]), cmap='grey_r')
         plt.scatter(10**(samples[:,0]), 
-                    10**(samples[:,1]), 1, c='w', alpha=0.01)
+                    10**(samples[:,1]), 1, c='r', alpha=0.08)
         pha.overlay()
+        plt.gca().set_box_aspect(1)
         plt.xscale('log')
         plt.yscale('log')
         plt.show()
@@ -527,53 +561,46 @@ def fit_sample(x, edges, gen_plot=False):
     # ----------------------------------------------------
     # 2. Get covariance and means.
     # ----------------------------------------------------
-    return pha
+    return pha, samples
 
 
-def fit_gmm(x, edges, n=1, gen_plot=False):
+def fit_gmm(x, edges, n=1, n_init=20, init_params='k-means++', rho=None, mu=None, gen_plot=False):
     """
     Fit to the data by sampling and fitting a Gaussian mixture model.
     """
+    samples = sampler(x, edges)  # generate samples representing the distribution
 
     # Import GMM package and related on demand. 
     from sklearn.mixture import GaussianMixture
     from sklearn.preprocessing import StandardScaler
 
-    # ----------------------------------------------------
-    # 1. Sample points from the discretized PDF
-    # ----------------------------------------------------
-    flat_pdf = x / x.sum()  # normalize to ensure it's a proper PDF
-    cdf = np.cumsum(flat_pdf)  # get cdf
-    
-    N = 20000 # number of samples
-
-    # Draw uniform random values in [0,1]
-    u = np.random.rand(N)
-
-    # Find grid-cell indices corresponding to sampled CDF positions
-    idx = np.searchsorted(cdf, u)
-
-    # Convert 1D indices → 2D grid coordinates
-    iy, ix = np.divmod(idx, len(edges[0]))
-    samples = np.column_stack((np.log10(edges[0])[ix], np.log10(edges[1])[iy]))
-
     scaler = StandardScaler()
     samples = scaler.fit_transform(samples)
 
-    # ----------------------------------------------------
-    # 2. Fit a Gaussian Mixture Model (GMM)
-    # ----------------------------------------------------
-    gmm = GaussianMixture(
-        n_components=2,
-        covariance_type='full',
-        n_init=10,           # multiple initializations for robustness
-        max_iter=400,
-        random_state=42,
-    )
-    gmm.fit(samples)
 
-    # real_covariances = gmm.covariances_
-    # real_means = gmm.means_
+
+    # ----------------------------------------------------
+    # Fit a Gaussian Mixture Model (GMM)
+    gmm = GaussianMixture(
+        n_components=n,
+        covariance_type='full',
+        n_init=n_init,           # multiple initializations for robustness
+        max_iter=300,
+        random_state=42,
+        init_params=init_params,
+    )
+    
+    # ----------------------------------------------------
+    if not rho is None:
+        Gam = np.array([[1.0, rho],
+                    [rho, 1.0]])
+        gmm.covariances_init = np.array([Gam] * n)
+
+    if not mu is None:
+        gmm.means_init = np.log10(mu)
+    # ----------------------------------------------------
+
+    gmm.fit(samples)
 
     # -- Transform the mean and covariance back --
     scaled_covs = gmm.covariances_
@@ -598,13 +625,16 @@ def fit_gmm(x, edges, n=1, gen_plot=False):
     else:
         pha = Phantoms(mu=real_means, Sig=real_covariances, w=gmm.weights_)
 
+    samples = samples * scaler.scale_ + scaler.mean_
     if gen_plot:
-        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]))
-        plt.scatter(10**(samples[:,0] * scaler.scale_[0] + scaler.mean_[0]), 
-                    10**(samples[:,1] * scaler.scale_[1] + scaler.mean_[1]), 1, c='w', alpha=0.01)
+        plt.figure(figsize=(10,10))
+        plt.pcolor(edges[0], edges[1], np.reshape(x, [len(edges[1]), len(edges[0])]), cmap='grey_r')
+        plt.scatter(10**(samples[:,0]), 
+                    10**(samples[:,1]), 1, c='r', alpha=0.08)
         pha.overlay()
+        plt.gca().set_box_aspect(1)
         plt.xscale('log')
         plt.yscale('log')
         plt.show()
 
-    return pha
+    return pha, samples
