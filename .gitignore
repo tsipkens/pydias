@@ -4,10 +4,12 @@ working/
 data/
 main_w*
 main_x*
+main_d*
 jupy/
 out/
 *.jpg
 *.svg
+bidias/io_jy.py
 
 
 # VS Code
