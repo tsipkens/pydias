@@ -10,7 +10,8 @@ from odias import kernel, invert
 
 # Generate reconstruction points and mobility setpoints
 d = np.logspace(np.log10(10), np.log10(1e3), 500)  # reconstruction points
-d_star = np.logspace(np.log10(13.1), np.log10(225), 114)  # mobility setpoints
+d_star = np.logspace(np.log10(13.1), np.log10(225), 114)  # mobility setpoints (truncated)
+d_star = np.logspace(np.log10(13.1), np.log10(600), 114)  # mobility setpoints (not-truncated)
 
 # Set device properties
 prop = props.dma()
@@ -28,13 +29,13 @@ b, Lb, x0 = tools.gen_data(A, d, mu, s, w, d_star)
 
 # Least-squares inversion
 print('Running least-squares ...')
-x_lsq, _ = invert.lsq(Lb @ A, Lb @ b)
+x_lsq = invert.lsq(Lb @ A, Lb @ b)
 autils.textdone()
 
 # Twomey inversion
 print('Running Twomey ...')
 xi = invert.get_init(Lb @ A, Lb @ b, d, d_star)
-x_two = invert.twomey(Lb @ A, Lb @ b, xi, f_bar=True)
+x_two = invert.twomey(Lb @ A, Lb @ b, xi, show_progress=True)
 autils.textdone()
 
 # Twomey-Markowski inversion

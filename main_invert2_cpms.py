@@ -6,7 +6,7 @@ from autils import autils, props, tools
 from tfer import tfer
 from bidias import kernel, invert
 from bidias.Grid import Grid, PartialGrid
-from bidias.Phantom import Phantom
+from bidias import Phantom
 
 
 # Create grid for Phantom and solution domain.
@@ -25,7 +25,7 @@ p = {
     'sm_d': 1.3,
 }
 
-pha = Phantom(massmob=p)
+pha = Phantom.Phantom(massmob=p)
 
 x = pha.eval(grid_x)
 grid_x.plot2d(x)
