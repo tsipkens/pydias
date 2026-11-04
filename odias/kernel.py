@@ -46,7 +46,7 @@ def gen_pma(sp, m, d, z=None, prop=None, opt=None, **kwargs):
         opt = '1C'  # Default transfer function evaluation method
 
     if prop is None:
-        prop = props.prop_pma()  # Use default PMA properties if not provided
+        prop = props.pma()  # Use default PMA properties if not provided
 
     if z is None:
         z = np.arange(1, 5)  # Default charge states [1, 2, 3, 4]
