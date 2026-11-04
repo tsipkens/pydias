@@ -18,14 +18,15 @@ grid_x.type = ['dm', 'rho']
 
 
 # Create phantom.
-p = {}
-p['dg'] = 127
-p['mg'] = 1000
-p['sd'] = 1.75
-p['zet'] = 0.001
-p['sm_d'] = 1.05
+p = {
+    'mu1': 127,
+    'mu2': 1000,
+    's1': 1.75,
+    'pow': 0.001,
+    's2|1': 1.05
+}
 
-pha = Phantom('massmob', prop=p)
+pha = Phantom(p=p)
 
 x = pha.eval(grid_x)
 grid_x.plot2d(x)

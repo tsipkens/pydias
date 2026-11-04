@@ -19,7 +19,10 @@ prop = autils.massmob_add(prop, 'soot')
 
 # Calculate transfer function
 opts = {'model': 'lt'}
-A, _, _ = tfer.aac(d_star, d, prop, opts)
+# A, _, _ = tfer.aac(d_star, d, prop, opts)
+
+spa = tfer.Setpoint(prop, type='aac', da_star=d_star, Qsh=prop['Qsh'])
+A, _, _ = tfer.aac(spa, d, prop, opts)
 
 # Generate distribution
 mu_d = 120
@@ -38,7 +41,7 @@ plt.show()
 
 # Least-squares inversion
 print('Running least-squares ...')
-x_lsq, _ = invert.lsq(Lb @ A, Lb @ b)
+x_lsq = invert.lsq(Lb @ A, Lb @ b)
 autils.textdone()
 
 # Twomey inversion

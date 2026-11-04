@@ -1,57 +1,74 @@
 
 import numpy as np
 
+from bidias import Grid
+
+# Import overlapping functions from odias.
+import odias.invert as odias_invert
+
 import scipy.sparse as sp
 from scipy.sparse.linalg import lsqr
-from scipy.linalg import cholesky, solve, lstsq
+from scipy.linalg import cholesky, solve, solve_triangular
 from scipy.optimize import lsq_linear, nnls
+from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
+from scipy.sparse.csgraph import laplacian
+
+from scipy.ndimage import gaussian_filter
+from sklearn.neighbors import NearestNeighbors
+
+import numpy as np
+
+from autils.tools import tqdm2 as tqdm
 
 import time
 
-import cvxpy as cp
-
-from bidias.tools import textdone
+from cmap import textdone
 
 from bidias.Grid import PartialGrid
 
-def lsq(A, b, method=None):
-    if method == None:
-        method = 'osqp'
+# NOTE: To be added.
+def reducer(A, b):
+    """
+    Reduce the size of the problem by removing 
+    empty columns and empty data points
+    (but then need to force towards zero).
 
-    if method == 'nnls':
-        A = A.todense()
-        x = nnls(A, b)[0]
-        
-    elif method == 'solve':
-        A = A.todense()
-        x = solve(A.T @ A, (A.T @ b).T)
+    Generalizable, but current only remove all zero columns (i.e., data does not impact x).
+    """
+    # x_keep = np.sum(A, axis=0) > -999 # != 0
 
-    elif method in ['spsolve', 'algebraic']:
-        x = sp.linalg.spsolve(A.T @ A, (A.T @ b))
+    # Used to zero rows where data has no impact on the reconstruction.
+    # Can shrink inversion matrices in some instances.
+    b_keep = np.sum(A, axis=1) != 0
+    A = A[b_keep, :]
+    b = b[b_keep]
 
-    elif method == 'lsqr':
-        x = lsqr(A, b)[0]
+    A = sp.coo_matrix(A)  # convert to sparse
 
-    elif method == 'lsq_linear':
-        res = lsq_linear(A, b, bounds=(0, np.inf))[0]
-        x = res['x']
+    return A, b, b_keep
 
-    # elif method == 'lstsq':
-    #     res = lsq_linear(A, b, bounds=(0, np.inf))[0]
-    #     x = res
+# def expander(x, x_keep):
+#     """
+#     Supplement x back up to the main size. 
+#     """
+#     xn = np.zeros(np.shape(x_keep))
+#     xn[x_keep] = x
 
-    elif method in ['cp', 'osqp']:
-        xc = cp.Variable(np.size(A, 1))
-        objective = cp.Minimize(cp.sum_squares(A @ xc - b))
-        constraints = [0 <= xc, xc <= np.inf]
-        prob = cp.Problem(objective, constraints)
-        prob.solve(solver='OSQP', eps_abs=1e-9)
-        x = xc.value
-
-    return x
+#     return xn
 
 
-def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
+def apply_dirichlet(L):
+    """
+    Apply Dirichlet boundary conditions given a list of edges.
+    """
+    L.setdiag(L.diagonal().max(), k=0)
+    return L
+
+
+# =========== TIKHONOV REGULARIZATION =========== #
+#             (i.e., ridge regression)
+def tikhonov_lpr(order=1, nx=None, x_length=None, bc=None, grid=None, variant=0, anisotropy=1.0):
     """
     Generates Tikhonov smoothing operators/matrix, L.
 
@@ -61,7 +78,7 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
         The order of the Tikhonov regularization. 
         Default is 1 (first derivative).
     
-    n : int or Grid
+    nx : int or Grid
         The number of grid points in the first dimension.
         Alternatively, use the grid input. 
     
@@ -85,133 +102,130 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
     Lpr2 : sparse matrix, optional
         Subcomponent of the Tikhonov matrix in the second dimension.
     """
-    
-    if order is None:
-        order = 2  # Default order
 
-    if type(order) == list:
-        if len(order) == 1:
-            var = [0]
-            order = order[0]
-        else:
-            var = order[1]
-            order = order[0]
-    else:
-        var = [0]
+    # Interpret boundary condition. 
+    # Convert to integers corresponding to which order derivative is zero.
+    if str(bc).lower() == 'dirichlet':
+        bc = 0
+    elif str(bc).lower() == 'nuemann':
+        bc = 1
+    elif bc is None:
+        bc = int(np.floor(order))  # by default, match boundary condition to order
     
-    if bc is None:
-        bc = int(np.floor(order))  # By default, match boundary condition to order
-    
-    if not grid == None:
-        n = grid.ne[0]
-        x_length = np.prod(grid.ne)
-    else:
-        if x_length % n != 0 and order != 0:
+    # ---- Get dimensions and adjacency ----
+    if grid == None:  # skip if Grid or PartialGrid is given
+        if x_length % nx != 0 and order != 0:
             raise ValueError("x_length must be an integer multiple of n.")
+        grid = Grid.Grid(span=[[0.1,1],[0.1,1]], ne=[nx, x_length/nx])  # create generic grid (span doesn't matter)
+    
+    nx = grid.ne[0]  # extract grid properties
+    ny = grid.ne[1]
+    x_length = np.prod(grid.ne)
 
-    # Initialize Lpr0 (and Lpr1, Lpr2 if applicable)
-    Lpr0 = None
+    adj = grid.adjacency(anisotropy=anisotropy)  # adjacency matrix
+    is_edge = grid.isedge()  # elements adjacent to an edge (used for Dirichlet BCs)
+    # ---------------------------------------
+
     Lpr1 = None
-    Lpr2 = None
+    Lpr2 = None # default if not overwritten
 
-    # Generate Tikhonov smoothing matrix based on the order
+    # Build base matrix.
     if order == 0:
-        # 0th order Tikhonov
-        if not grid == None:
-            Lpr0 = -sp.eye(grid.Ne, format='csr')
-        else:
-            Lpr0 = -sp.eye(x_length, format='csr')
+        Lpr0 = -sp.eye(x_length, format='csr')
 
     elif order == 1:  # 1st order Tikhonov
-        if type(grid) == PartialGrid:
-            Lpr0 = grid.l1()
-            Lpr0 = sp.csr_matrix(Lpr0)
+        # Produces a flattened Tikhonov matrix corresponding to Lx + Ly = 0. 
+
+        if variant == 0:
+            Lpr0 = sp.triu(adj, k=1)  # forward difference corresponds to upper triangle
+            
+            # Perform operation common to BCs. 
+            D = sp.diags(Lpr0.sum(axis=1).A1)  # degree: used to adjust diagonal (each row now sums to zero)
+            Lpr0 = D - Lpr0
+
+            # Modify based on boundary conditions.
+            if bc == 1:
+                Lpr0 = Lpr0[:-1, :]  # only remove trailing zeros
+                
+                # To remove possible bending as edges. Remove anisotropy for edge cells.
+                target_rows = np.where(np.diff(Lpr0.indptr) == 2)[0]
+                diags = Lpr0.diagonal()
+                scale = np.ones(Lpr0.shape[0])  # scale parameter to be adjusted
+                scale[target_rows] = 1.0 / diags[target_rows]  # adjust on only target rows
+                Lpr0 = sp.diags(scale) @ Lpr0
+
+            elif bc == 0: Lpr0 = apply_dirichlet(Lpr0)
+            else: raise ValueError("Boundary condition must be 0 (dirichlet) or 1 (nuemann).")
+
+        elif variant == 1:
+            adj_coo = sp.triu(sp.coo_matrix(adj)) # Use upper triangle to avoid double-counting edges
+            
+            rows = adj_coo.row
+            cols = adj_coo.col
+            num_edges = len(rows)
+            num_nodes = adj.shape[0]
+            
+            # Create the incidence matrix L
+            # Each row represents an edge (i, j)
+            # L[edge_k, i] = -1, L[edge_k, j] = 1
+            edge_indices = np.arange(num_edges)
+            
+            data = np.concatenate([-np.ones(num_edges), np.ones(num_edges)])
+            row_indices = np.concatenate([edge_indices, edge_indices])
+            col_indices = np.concatenate([rows, cols])
+            
+            Lpr0 = sp.csr_matrix((data, (row_indices, col_indices)), shape=(num_edges, num_nodes))
 
         else:
-            I1 = 0.5 * sp.eye(n)
-            E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-            D1 = E1 - I1
+            raise ValueError("Variant not available.")
 
-            m = x_length // n
-            I2 = 0.5 * sp.eye(m)
-            E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-            D2 = E2 - I2
-
-            Lpr0 = sp.kron(I2, D1) + sp.kron(D2, I1)
-            Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
-            Lpr0 = Lpr0[:-1, :]
-            
-
-    elif order == 2:
-        # 2nd order Tikhonov (with variants)
+    elif order == 2:  # 2nd order Tikhonov (with variants)
 
         # Case 0: standard Laplacian
-        if var[0] == 0:
-            if len(var) == 1:
-                var.append(1)
-                
-            I1 = 0.25 * sp.eye(n, n)
-            E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-            D1 = E1 + E1.T - I1
+        if variant == 0:
+            Lpr0 = laplacian(adj)  # use existing Laplacian function
 
-            m = x_length // n
-            I2 = 0.25 * sp.eye(m, m)
-            E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-            D2 = E2 + E2.T - I2
-
-            Lpr1 = var[1] * sp.kron(I2, D1)
-            Lpr2 = sp.kron(D2, I1)
-            Lpr0 = Lpr1 + Lpr2
-            Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
+            # Modify based on boundary conditions.
+            if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
         # Case 1: difference in both dimensions
-        elif var[0] == 1:
-            if len(var) == 1:
-                var.append(1)
+        elif variant == 1:
+            Ix = sp.eye(nx, nx)
+            Dx = -2 * sp.eye(ny, ny)
+            Dx = sp.diags([np.ones(ny - 1), np.ones(ny - 1)], [-1, 1]) + Dx
 
-            m = x_length // n
+            Iy = sp.eye(ny, ny)
+            Dy = -2 * sp.eye(nx, nx)
+            Dy = sp.diags([np.ones(nx - 1), np.ones(nx - 1)], [-1, 1]) + Dy
 
-            I1 = sp.eye(n, n)
-            D1 = -2 * sp.eye(m, m)
-            D1 = sp.diags([np.ones(m - 1), np.ones(m - 1)], [-1, 1]) + D1
-
-            I2 = sp.eye(m, m)
-            D2 = -2 * sp.eye(n, n)
-            D2 = sp.diags([np.ones(n - 1), np.ones(n - 1)], [-1, 1]) + D2
-
-            Lpr1 = var[1] * sp.kron(I2, D2)
-            Lpr2 = sp.kron(D1, I1)
+            Lpr1 = sp.kron(Iy, Dy)
+            Lpr2 = sp.kron(Dx, Ix)
             Lpr0 = Lpr1 - Lpr2
 
-            # if isinstance(grid, PartialGrid):
-            #     Lpr0 = Lpr0.tolil()
-            #     Lpr0[grid.missing, :] = 0
-            #     Lpr0[:, grid.missing] = 0
-            #     Lpr0 = Lpr0.tocsr()
-
         else:
-            print('Variant not available.')
+            raise ValueError("Variant not available.")
+
+        # Modify based on boundary conditions.
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
     elif order == 3:
         # 3rd order derivative
-        I1 = sp.eye(n)
-        m = x_length // n
+        Ix = sp.eye(nx)
+        ny = x_length // nx
         
-        D1 = sp.csr_matrix((np.ones(m-2), (np.arange(m-2), np.arange(2, m))), shape=(m, m))
-        D1 = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(m, m))
+        Dx = sp.csr_matrix((np.ones(ny-2), (np.arange(ny-2), np.arange(2, ny))), shape=(ny, ny))
+        Dx = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(ny, ny))
 
-        I2 = sp.eye(m)
-        D2 = sp.csr_matrix((np.ones(n-2), (np.arange(n-2), np.arange(2, n))), shape=(n, n))
-        D2 = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(n, n))
+        Iy = sp.eye(ny)
+        Dy = sp.csr_matrix((np.ones(nx-2), (np.arange(nx-2), np.arange(2, nx))), shape=(nx, nx))
+        Dy = sp.diags([-0.5, 1, -1, 0.5], [-2, -1, 1, 2], shape=(nx, nx))
 
-        Lpr1 = sp.kron(I2, D2)
-        Lpr2 = sp.kron(D1, I1)
+        Lpr1 = sp.kron(Iy, Dy)
+        Lpr2 = sp.kron(Dx, Ix)
         Lpr0 = Lpr1 + Lpr2
 
-        # if hasattr(grid, 'missing'):
-        #     Lpr0 = Lpr0.tocsr()
-        #     Lpr0[grid.missing, :] = 0
-        #     Lpr0[:, grid.missing] = 0
+        # Modify based on boundary conditions.
+        if bc == 0: Lpr0 = apply_dirichlet(Lpr0)
 
     else:
         if 1 < order < 2:
@@ -219,16 +233,16 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
             if hasattr(grid, 'l1'):
                 Lpr0 = grid.l1(slope, bc)
             else:
-                I1 = 0.5 * sp.eye(n)
-                E1 = sp.csr_matrix((np.ones(n-1), (np.arange(n-1), np.arange(1, n))), shape=(n, n))
-                D1 = E1 - I1
+                Ix = 0.5 * sp.eye(nx)
+                Ex = sp.csr_matrix((np.ones(nx-1), (np.arange(nx-1), np.arange(1, nx))), shape=(nx, nx))
+                Dx = Ex - Ix
 
-                m = x_length // n
-                I2 = slope / 2 * sp.eye(m)
-                E2 = sp.csr_matrix((np.ones(m-1), (np.arange(m-1), np.arange(1, m))), shape=(m, m))
-                D2 = E2 - I2
+                ny = x_length // nx
+                Iy = slope / 2 * sp.eye(ny)
+                Ey = sp.csr_matrix((np.ones(ny-1), (np.arange(ny-1), np.arange(1, ny))), shape=(ny, ny))
+                Dy = Ey - Iy
 
-                Lpr0 = sp.kron(I2, D1) + sp.kron(D2, I1)
+                Lpr0 = sp.kron(Iy, Dx) + sp.kron(Dy, Ix)
                 Lpr0 = Lpr0 - sp.diags(Lpr0.sum(axis=1).A1, 0)
                 Lpr0 = Lpr0[:-1, :]
 
@@ -238,7 +252,7 @@ def tikhonov_lpr(order=1, n=None, x_length=None, bc=None, grid=None):
     return Lpr0, Lpr1, Lpr2
 
 
-def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=None, method=None):
+def tikhonov(A, b, lam, order=None, nx=None, bc=None, xi=None, grid=None, Lpr0=None, variant=0, anisotropy=1.0, **kwargs):
     """
     Performs inversion using various order Tikhonov regularization.
     Regularization takes place in 2D. The type of regularization or prior
@@ -254,7 +268,7 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         Regularization parameter.
     order : int, can be replaced by L
         Specifies the order of Tikhonov regularization.
-    n : int or Grid, optional
+    nx : int, optional (but then requires grid or Lpr0)
         Length of the first dimension of the solution (otherwise, specify grid).
     bc : int, optional
         Boundary conditions.
@@ -264,6 +278,10 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
         A instance of the Grid class to be used to build the Tikhonov matrix.
     Lpr0 : np.ndarray, optional
         A precomputed Tikhonov matrix.
+    anisotropy : float
+        Anisotropy parameter, allowing for different weighting in horiztonal direction.
+    **kwargs
+        Other keyword arguments that are passed to lsq.
 
     Returns:
     --------
@@ -276,126 +294,295 @@ def tikhonov(A, b, lam, order=None, n=None, bc=None, xi=None, grid=None, Lpr0=No
     Gpo_inv : np.ndarray, optional
         Inverse posterior covariance.
     """
-    print('\r' + '\033[36m' + '[ TIKHONOV INVERSION ]' + '\033[0m')
+    print('\r' + '\033[36m' + f'[ TIKHONOV INVERSION (order={order}) ]' + '\033[0m')
     print('Running ...', end="", flush=True)
 
-    start_time = time.time() # enables timing
+    A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
 
-    x_length = A.shape[1]
+    x_length = A.shape[1]  # get x_length from A matrix
 
     # Parse inputs
     if order is None:
         order = 1  # Default to 1st order if not specified
-
-    if bc is None:
-        bc = 0
 
     if xi is None:
         xi = np.zeros(x_length)
 
     # Get Tikhonov smoothing matrix (if not given)
     if Lpr0 == None:
-        Lpr0, _, _ = tikhonov_lpr(order, n, x_length, bc, grid=grid)
+        Lpr0, _, _ = tikhonov_lpr(order, nx, x_length, bc, grid=grid, anisotropy=anisotropy, variant=variant)
 
-    Lpr = lam * Lpr0.todense()
-    
-    # Choose and execute solver
-    pr_length = Lpr0.shape[0]
-    
-    A_aug = np.asarray(np.vstack((A, Lpr)))
-    b_aug = np.concatenate([b, np.zeros(pr_length)])
-    
-    A_aug2 = sp.csr_matrix(A_aug)
+    #-- Choose and execute solver --------------------------------#
+    start_time = time.time() # enables timing
 
-    x = lsq(A_aug2, b_aug, method=method)
-
-    D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
-
-    # Uncertainty quantification
-    Gpo_inv = None
+    x = odias_invert.regularization_engine(A, b, lam, Lpr0, **kwargs)
 
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
+    #-------------------------------------------------------------#
+
+    # Uncertainty quantification
+    D = None # np.linalg.pinv(A_aug.toarray())  # Calculate explicit inverse operator
+    Gpo_inv = None
 
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
+
+    # x = expander(x, x_keep)
 
     return x, D, Lpr0, Gpo_inv
 
 
-def exp_dist_lpr(Gd, vec2, vec1, grid=None):
-
+# =========== EXP. DISTANCE REGULARIZATION =========== #
+def exp_dist_lpr(Gd, vec2=None, vec1=None, grid=None, dist_cutoff=1.75, fast=False):
+    # 1. Pre-process elements efficiently
     if hasattr(grid, 'elements'):
-        vec1 = grid.elements[:,0]
-        vec2 = grid.elements[:,1]
+        el = grid.elements.copy()
+        for ii in range(2):
+            if grid.discrete[ii] == 'log':
+                el[:, ii] = np.log10(el[:, ii])
+    else:
+        el = np.log10(np.column_stack((vec1, vec2)))
     
-    #-- Compute distances between elements -----------------------------------#
-    vec2_a, vec2_b = np.meshgrid(vec2, vec2)  # for differences in 2nd dim
-    vec1_a, vec1_b = np.meshgrid(vec1, vec1)  # for differences in 1st dim
+    #-- Compute Mahalanobis distances between elements -----------------------#
+    # Linear transformation approach: (x-y).T @ Gd_inv @ (x-y) 
+    # is equivalent to Euclidean distance of (L_inv @ el)
+    # where L @ L.T = Gd.
+    L_Gd = cholesky(Gd, lower=True)
+    el_transformed = np.linalg.solve(L_Gd, el.T).T
+    D = cdist(el_transformed, el_transformed, metric='euclidean')
 
-    Gd_inv = np.linalg.inv(Gd)
-    dr1 = np.log10(vec1_a) - np.log10(vec1_b)
-    dr2 = vec2_a - vec2_b
-
-    D = np.sqrt(
-        dr1**2 * Gd_inv[0, 0] +
-        2 * dr2 * dr1 * Gd_inv[0, 1] +
-        dr2**2 * Gd_inv[1, 1]
-    )  # distance
-
-    #-- Compute prior covariance matrix --------------------------------------#
+    # #-- Compute prior covariance matrix --------------------------------------#
+    # Gpr is a positive definite kernel (Squared Exponential/Exponential)
     Gpr = np.exp(-D)
 
-    Gpr_inv = np.linalg.pinv(Gpr)
-    Lpr = cholesky(Gpr_inv, lower=False)
+    if fast:  # instead of pinv, get the Precision matrix directly via Cholesky
+        Lpr = cholesky(Gpr + 1e-5 * np.eye(Gpr.shape[0]), lower=True)
+        I = np.eye(Lpr.shape[0])
+        Lpr = solve_triangular(Lpr, I, lower=True).T
+
+    else:  # more accurate fallback to pinv, incl. if Gpr is singular
+        Gpr_inv = np.linalg.pinv(Gpr)
+        Lpr = cholesky(Gpr_inv, lower=False)
+
+    Lpr[D > dist_cutoff] = 0  # zero values where distances are large
 
     return Lpr, D, Gpr
 
-def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, xi=None, solver=None, grid=None):
+# def exp_dist_lpr_sparse(Gd, vec2, vec1, grid=None, dist_cutoff=1.75):
+#     # 1. Pre-process elements
+#     if hasattr(grid, 'elements'):
+#         el = grid.elements.copy()
+#         for ii in range(2):
+#             if grid.discrete[ii] == 'log':
+#                 el[:, ii] = np.log10(el[:, ii])
+#     else:
+#         el = np.log10(np.column_stack((vec1, vec2)))
+    
+#     # 2. Linear transformation (Whitening)
+#     # Transforming coordinates so Euclidean distance = Mahalanobis distance
+#     L_Gd = cholesky(Gd, lower=True)
+#     el_transformed = np.linalg.solve(L_Gd, el.T).T
+    
+#     # 3. Sparse Distance Calculation using KDTree
+#     # This replaces cdist and only finds neighbors within the cutoff
+#     tree = cKDTree(el_transformed)
+    
+#     # sparse_distance_matrix returns a coordinate format (COO) sparse matrix
+#     D_sparse = tree.sparse_distance_matrix(tree, max_distance=dist_cutoff, output_type='ndarray')
+    
+#     # D_sparse contains [row_indices, col_indices, distances]
+#     rows = D_sparse['i']
+#     cols = D_sparse['j']
+#     dist_values = D_sparse['v']
+    
+#     # 4. Compute Sparse Gpr (Covariance)
+#     # Gpr = exp(-D)
+#     gpr_values = np.exp(-dist_values)
+#     Gpr_sparse = sp.csr_matrix((gpr_values, (rows, cols)), shape=(len(el), len(el)))
+    
+#     # 5. Precision Matrix (Lpr)
+#     # NOTE: Calculating the inverse or Cholesky of a sparse matrix 
+#     # and keeping it sparse is mathematically complex. 
+#     # Usually, we approximate the precision matrix directly for spatial processes.
+    
+#     # If you strictly need the Lpr logic from your original code:
+#     Gpr_dense = Gpr_sparse.toarray()
+#     Lpr = cholesky(np.linalg.pinv(Gpr_dense), lower=False)
+#     Lpr[Gpr_dense == 0] = 0 # Enforce sparsity pattern
+    
+#     return sp.csr_matrix(Lpr), Gpr_sparse
+
+def exp_dist_lpr_s21(Gd, sd=1.0, vec2=None, vec1=None, grid=None, dist_cutoff=1.75, fast=False):
+    """
+    Special exponential distance Lpr for charging problem that has varying s2|1.
+    Corresponds to varying amount of correlation across the domain.
+    """
+    
+    # Pre-process elements efficiently
+    if hasattr(grid, 'elements'):
+        el = grid.elements.copy()
+        for ii in range(2):
+            el[:, ii] = np.log10(el[:, ii])
+    else:
+        # Avoid hstack if possible, but keeping logic consistent
+        el = np.log10(np.column_stack((vec1, vec2)))
+    
+    #-- Compute Mahalanobis distances between elements -----------------------#
+    # Extract Gd components.
+    g11, g22, g12 = Gd[0, 0], Gd[1, 1], Gd[0, 1]
+    sgn = np.sign(g12) # Direction of correlation
+
+    # Define s2|1 as a function. Wider at small charge states. 
+    y = el[:, 1]  # for function of second dimension
+    s21_vec = np.maximum(np.log10(1 / (1 - sd / 10**y)), 0)  # function for conditional width
+
+    # g12 varies to satisfy the s2|1 requirement
+    # Note: As long as s21_vec is constant, g12_vec will be constant and equal to g12
+    # g12 = sgn * sqrt( g11 * (g22 - s2|1**2) )
+    g12_vec = sgn * np.sqrt(np.maximum(g11 * (g22 - s21_vec**2), 0))
+
+    # Pairwise differences for both dimensions.
+    dx = el[:, 0][:, np.newaxis] - el[:, 0][np.newaxis, :]
+    dy = el[:, 1][:, np.newaxis] - el[:, 1][np.newaxis, :]
+
+    # Symmetric averaging of the varying component.
+    g12_avg = 0.5 * (g12_vec[:, np.newaxis] + g12_vec[np.newaxis, :])
+
+    # Calculate local determinant and Mahalanobis distance.
+    det_Gd = g11 * g22 - g12_avg**2
+    D2 = (g22 * dx**2 - 2 * g12_avg * dx * dy + g11 * dy**2) / det_Gd
+    D = np.sqrt(np.maximum(D2, 0))
+    # -------------------------------------------------
+
+    # #-- Compute prior covariance matrix --------------------------------------#
+    # Gpr is a positive definite kernel (Squared Exponential/Exponential)
+    Gpr = np.exp(-D)
+
+    if fast:  # instead of pinv, get the Precision matrix directly via Cholesky
+        Lpr = cholesky(Gpr + 1e-5 * np.eye(Gpr.shape[0]), lower=True)
+        I = np.eye(Lpr.shape[0])
+        Lpr = solve_triangular(Lpr, I, lower=True).T
+
+    else:  # more accurate fallback to pinv, incl. if Gpr is singular
+        Gpr_inv = np.linalg.pinv(Gpr)
+        Lpr = cholesky(Gpr_inv, lower=False)
+
+    Lpr[D > dist_cutoff] = 0  # zero values where distances are large
+
+    return Lpr, D, Gpr
+
+def get_Gd(gsd1, gsd2, R=0.95):
+    """
+    Build covariance matrix from two correlation lengths (given as GSDs) and a correlation.
+    """
+    lengths = np.array([np.log10(gsd1), np.log10(gsd2)])  # correlation lengths, i.e., standard deviations
+    Gd = np.diag(lengths) ** 2
+    Gd[1,0] = R * np.prod(lengths)
+    Gd[0,1] = Gd[1,0]
+    return Gd
+
+def exp_dist(A, b, lam, Gd=np.eye(2), vec2=None, vec1=None, grid=None, Lpr0=None, fast=False, **kwargs):
 
     print('\r' + '\033[36m' + '[ EXPONENTIAL DISTANCE INVERSION ]' + '\033[0m')
+
+    A, b, _ = reducer(A, b)  # reduce matrix depending on all zero cols
+
+    x_length = A.shape[1]
 
     if vec1 is None:
         vec1 = []
 
-    x_length = A.shape[1]
+    # Compute Lpr0 if not given.
+    # Can be bypassed by pre-computing Lpr0.
+    if Lpr0 is None:
+        #-- Validate Gd input -------------------------------------#
+        if Gd[0, 1] / np.sqrt(Gd[0, 0] * Gd[1, 1]) >= 1:
+            raise ValueError('Correlation greater than 1.')
+        #----------------------------------------------------------#
 
-    #-- Parse inputs ---------------------------------------------#
-    if Gd[0, 1] / np.sqrt(Gd[0, 0] * Gd[1, 1]) >= 1:
-        raise ValueError('Correlation greater than 1.')
-
-    if xi is None:
-        xi = None  # if no initial x is given
-    if solver is None:
-        solver = None  # if computation method not specified
-    #-------------------------------------------------------------#
-
-    # Use external function to evaluate prior covariance
-    print('Building Lpr ...', end="", flush=True)
-    start_time = time.time()  # time the contribution
-    Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid)
-    Lpr = lam * Lpr0
-    end_time = time.time()
-    textdone(f' ({end_time - start_time:.2f} s)')
-
-    # Augment data with prior matrix.
-    A_aug = sp.vstack([A, Lpr]).todense()
-    b_aug = np.hstack([b, np.zeros(x_length)])
+        # Use external function to evaluate prior covariance
+        print('Building Lpr ...', end="", flush=True)
+        start_time = time.time()  # time the contribution
+        Lpr0, _, _ = exp_dist_lpr(Gd, vec2, vec1, grid, fast=fast)
+        end_time = time.time()
+        textdone(f' ({end_time - start_time:.2f} s)')
 
     #-- Choose and execute solver --------------------------------#
     print('Inverting system ...', end="", flush=True)
     start_time = time.time()  # time the contribution
-    x = nnls(A_aug, b_aug)[0]
+
+    x = odias_invert.regularization_engine(A, b, lam, Lpr0, **kwargs)
+
     end_time = time.time()
     textdone(f' ({end_time - start_time:.2f} s)')
-
-    D = None  # inverse operator placeholder (modify based on the logic)
+    #-------------------------------------------------------------#
 
     #-- Uncertainty quantification -------------------------------#
+    D = None  # inverse operator placeholder (modify based on the logic)
     if Gd is not None:
-        Gpo_inv = A.T @ A + Lpr.T @ Lpr
+        Gpo_inv = A.T @ A + lam**2 * Lpr0.T @ Lpr0
     else:
         Gpo_inv = None
 
     print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
 
     return x, D, Lpr0, Gpo_inv
+
+
+# =========== TOTAL VARIATION REGULARIZATION =========== #
+def total_variation(A, b, lam, nx=None, grid=None, max_iter=3, xi=None, delta=1e-5, **kwargs):
+    """
+    Total variation regularization based on that in Grauer et al. (2018). 
+    """
+    A, b, _ = reducer(A, b)
+    x_length = A.shape[1]
+
+    if xi is None:
+        xi = np.ones(x_length)
+    x = xi
+    
+    # Get gradient operators. 
+    D1, _, _ = tikhonov_lpr(order=1, nx=nx, grid=grid, x_length=x_length)
+    D2, _, _ = tikhonov_lpr(order=2, nx=nx, grid=grid, x_length=x_length)
+    
+    print('\r' + '\033[36m' + '[ TOTAL VARIATION INVERSION ]' + '\033[0m')
+    print('Inverting system ...', end="", flush=True)
+    start_time = time.time()  # time the contribution
+
+    for ii in tqdm(range(max_iter)):
+        # Build the prior matrix.
+        w = np.concatenate((1 / np.sqrt(np.sqrt((D1 @ x)**2 + delta**2)), [0]))
+        Lpr = lam * (sp.diags(w) @ D2)
+        Lpr = sp.coo_matrix(Lpr)
+
+        # Augment data with prior matrix.
+        A_aug = sp.vstack([A, Lpr])
+        b_aug = np.concatenate([b, np.zeros(Lpr.shape[0])])
+
+        #-- Choose and execute solver --------------------------------
+        A_aug2 = sp.csr_matrix(A_aug)
+        x = odias_invert.lsq(A_aug2, b_aug, **kwargs)
+
+    end_time = time.time()
+    textdone(f' ({end_time - start_time:.2f} s)')
+
+    print('\r' + '\033[36m' + '[ INVERSION COMPLETE! ]' + '\033[0m' + '\n\n')
+
+    # -- Alternate code could be used if bypassing lsq and linearization --
+    # # x is the grid quantity we want to find
+    # x = cp.Variable(n_nodes)
+
+    # # D is the difference operator from the adjacency matrix
+    # objective = cp.Minimize(cp.sum_squares(A @ x - y) + lmbda * cp.norm(D @ x, 1))
+    # prob = cp.Problem(objective)
+    # prob.solve()
+            
+    return x
+
+
+def twomey(*args, **kwargs):
+    """
+    Twomey regularization, refers to odias method.
+    """
+    return odias_invert.twomey(*args, **kwargs)
+

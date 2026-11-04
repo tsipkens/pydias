@@ -1,9 +1,7 @@
 
 import numpy as np
 
-from bidias.Grid import Grid, PartialGrid
-
-def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
+def x2y(x, grid_x, fun=None, grid_y=None, axis=1, span_y=None, n_y=200, new_type='', transpose=False):
     """
     Transform a distribution to a different space.
     
@@ -14,12 +12,16 @@ def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
         Input grid object.
     fun : function, optional
         Transformation function. Default is mass-mobility transformation.
-    dim : int, optional
-        Dimension to preserve (default is 2).
+    axis : int, optional
+        Dimension to change (default is 1).
     span_y : tuple, optional
         Explicit span of the transformed quantity.
     n_y : int, optional
         Number of elements in the transformed dimension (default is 600).
+    new_type : str, optional
+        Assigns the type of dimension that is being added (e.g., rho, mp, dm).
+    transpose : bool, optional
+        Whether to transpose the output distribution before returning (default is False)
     
     Returns:
     y : np.ndarray
@@ -29,14 +31,17 @@ def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
     T : np.ndarray
         Transformation matrix.
     """
+
+    from bidias.Grid import Grid
     
     if fun is None:
-        fun = get_transform('mp2rho')[0]
+        fun, new_type, _, _ = get_transform('mp2rho')
 
     elif type(fun) == str:
-        fun = get_transform(fun)[0]
+        fun, new_type, _, _ = get_transform(fun)
 
-    dim2 = 1 - dim  # other dimension (switch between 0 and 1)
+    dim2 = axis
+    dim = 1 - axis  # other dimension (to preserve, switch between 0 and 1)
 
     if grid_y == None:  # build grid, if not given
         # Estimate span_y if not provided
@@ -56,10 +61,10 @@ def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
         
         if dim == 1:
             grid_y = Grid(span=[span_y, grid_x.span[1]], ne=[n_y, len(grid_x.edges[1])])
-            grid_y.type = ['', grid_x.type[1]]
+            grid_y.type = [new_type, grid_x.type[1]]
         else:
             grid_y = Grid(span=[grid_x.span[0], span_y], ne=[len(grid_x.edges[0]), n_y])
-            grid_y.type = [grid_x.type[0], '']
+            grid_y.type = [grid_x.type[0], new_type]
     
     x_rs = grid_x.reshape(x)
     if dim == 1:
@@ -107,6 +112,9 @@ def x2y(x, grid_x:Grid, fun=None, grid_y=None, dim=0, span_y=None, n_y=200):
     # if isinstance(grid_x, PartialGrid):
     #     grid_y = PartialGrid(grid_x.span, grid_x.ne, r=grid_x.r, slope=grid_x.slope)
     
+    if transpose:
+        grid_y, y = grid_y.transpose(y)
+
     return y, grid_y, T
 
 
@@ -117,20 +125,65 @@ def get_transform(spec:str):
         c0 = np.array([0, np.log10(6 / np.pi) + 9])
         T = np.array([[1, 0], [-3, 1]])
         fun = lambda b, a: 6 * a / (np.pi * b ** 3) * 1e9
+        new_type = 'rho'
 
     elif spec == 'rho2mp':
         c0 = np.array([0, np.log10(np.pi / 6) - 9])
         T = np.array([[1, 0], [3, 1]])
         fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
+        new_type = 'mp'
 
-    return fun, T, c0
+    # elif spec == 'dm2rho':
+    #     c0 = np.array([0, np.log10(np.pi / 6) - 9])
+    #     T = np.array([[0, 1], [-3, 1]])
+    #     fun = lambda b, a: (np.pi/6) * (a*1e-9) * b**3
+    #     new_type = 'rho'
+
+    return fun, new_type, T, c0
 
 
-def textdone(lineend=''):
-    print('\033[32m' + ' < DONE!' + '\033[0m' + lineend)
+from sklearn.cluster import DBSCAN
+def snap_to_grid(points):
+    pts = np.array(points)
+    snapped_pts = np.empty_like(pts)
+    indices_2d = np.empty_like(pts, dtype=int)
+    edges = []
 
-def textblue(txt):
-    """
-    Print blue text (for headings).
-    """
-    print('\r' + '\033[36m' + txt + '\033[0m')
+    for ii in range(2):  # 0 for X, 1 for Y
+        axis_data = pts[:, ii].reshape(-1, 1)
+        
+        # 1. Automatically determine epsilon (eps)
+        # Sort and find gaps to estimate the noise level
+        sorted_coords = np.sort(pts[:, ii])
+        diffs = np.diff(sorted_coords)
+        valid_diffs = diffs[diffs > 1e-8]
+        
+        # eps should be larger than jitter but smaller than grid spacing
+        eps = (np.max(axis_data) - np.min(axis_data)) / 500
+        
+        # 2. Run DBSCAN
+        # min_samples=1 ensures every point gets a cluster (unless we want to filter noise)
+        db = DBSCAN(eps=eps, min_samples=1).fit(axis_data)
+        labels = db.labels_
+        
+        # 3. Calculate cluster centers and snap points
+        unique_labels = np.unique(labels)
+        cluster_means = {}
+        
+        for label in unique_labels:
+            if label == -1: continue # Handle noise if min_samples > 1
+            mask = (labels == label)
+            cluster_means[label] = np.mean(axis_data[mask])
+            snapped_pts[mask, ii] = cluster_means[label]
+
+        # 4. Map to 2D Indices
+        # We sort the cluster centers to ensure indices follow spatial order
+        sorted_centers = np.sort(list(cluster_means.values()))
+        edges.append(sorted_centers)
+        indices_2d[:, ii] = np.searchsorted(sorted_centers, snapped_pts[:, ii])
+
+    # 5. Calculate Linear Index (Row-Major: row * width + col)
+    num_cols = len(edges[0])
+    linear_indices = (indices_2d[:, 1] * num_cols) + indices_2d[:, 0]
+
+    return snapped_pts, indices_2d, linear_indices, edges

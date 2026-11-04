@@ -1,10 +1,13 @@
 
 import numpy as np
 
+import scipy.sparse as sp
 from scipy.sparse import coo_matrix, lil_matrix
 
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from cmap import get_colormap
 
 import tqdm
 
@@ -24,6 +27,7 @@ class Grid:
         """
         
         # Initiate properties and set some defaults.
+        discrete = ['lin' if item.lower() == 'linear' else item for item in discrete]  # convert to shorthand for linear dimensions
         self.discrete = discrete
         self.dim = 2
         self.type = type  # types for the grid (e.g., 'mp', 'dm', 'da', 'mrBC', 'rho')
@@ -37,6 +41,7 @@ class Grid:
         self.nodes_tr = [None] * self.dim  # transformed nodes (used for dr)
 
         self.elements = None
+        self.ielements = None  # elements in terms of index
         self.nelements = None
         self.nelements_tr = None
 
@@ -73,17 +78,20 @@ class Grid:
         # Generate nodes
         for ii in range(self.dim):
             if self.discrete[ii] == 'log':
-                r_m = np.exp((np.log(self.edges[ii][1:]) + np.log(self.edges[ii][:-1])) / 2)
+                r_m = np.exp((np.log(self.edges[ii][1:]) + np.log(self.edges[ii][:-1])) / 2)  # mid-point in log-space
                 self.nodes[ii] = np.concatenate([[np.exp(2 * np.log(self.edges[ii][0]) - np.log(r_m[0]))], r_m, [np.exp(2 * np.log(self.edges[ii][-1]) - np.log(r_m[-1]))]])
                 self.nodes_tr[ii] = np.log10(self.nodes[ii])
             elif self.discrete[ii] == 'lin':
-                r_m = (self.edges[ii][1:] + self.edges[ii][:-1]) / 2
+                r_m = (self.edges[ii][1:] + self.edges[ii][:-1]) / 2  # mid-point in linear space
                 self.nodes[ii] = np.concatenate([[2 * self.edges[ii][0] - r_m[0]], r_m, [2 * self.edges[ii][-1] - r_m[-1]]])
                 self.nodes_tr[ii] = self.nodes[ii]
 
         vec1 = np.meshgrid(self.edges[0], self.edges[1])
         self.elements = np.vstack([vec1[0].ravel(), vec1[1].ravel()]).T
         
+        ivec1 = np.meshgrid(np.arange(self.ne[0]), np.arange(self.ne[1]))
+        self.ielements = np.vstack([ivec1[0].ravel(), ivec1[1].ravel()]).T
+
         vec1 = np.meshgrid(self.nodes[0][:-1], self.nodes[1][:-1])
         vec2 = np.meshgrid(self.nodes[0][1:], self.nodes[1][1:])
         self.nelements = np.vstack([vec1[0].ravel(), vec2[0].ravel(), vec1[1].ravel(), vec2[1].ravel()]).T
@@ -93,31 +101,149 @@ class Grid:
             if self.discrete[ii] == 'log':
                 self.nelements_tr[:,2*ii:2*ii+2] = np.log10(self.nelements_tr[:,2*ii:2*ii+2])
 
-    def adjacency(self, w=1):
-        ind1 = []
-        ind2 = []
-        vec = []
+    def __repr__(self):
+        """
+        Generates and prints a smooth-cornered ASCII graphic of the grid 
+        showing limits (span) and counts (ne).
+        
+        Parameters:
+        scale_factor (int): Multiplier for the internal display width/height 
+                            to control the size of the empty box (default is 2).
+        """
+        
+        # --- Determine dimensions and metadata ---
+        scale_factor = 4 / np.min(self.ne)
 
-        for jj in range(np.prod(self.ne)):
-            if (jj + 1) % self.ne[0] != 0:  # up pixels
-                ind1.append(jj)
-                ind2.append(jj + 1)
-                vec.append(w)
-            if jj % self.ne[0] != 0:  # down pixels
-                ind1.append(jj)
-                ind2.append(jj - 1)
-                vec.append(w)
-            if jj >= self.ne[0]:  # left pixels
-                ind1.append(jj)
-                ind2.append(jj - self.ne[0])
-                vec.append(1)
-            if jj < (np.prod(self.ne) - self.ne[0]):  # right pixels
-                ind1.append(jj)
-                ind2.append(jj + self.ne[0])
-                vec.append(1)
+        # Width of the internal data area (scaled)
+        inner_width = int(np.ceil(self.ne[0] * scale_factor * 3))  # Factor of 2 for better horizontal stretch
+        inner_height = int(np.ceil(self.ne[1] * scale_factor))
+        
+        # Metadata strings (formatted to fit standard display space)
+        x_min_str = f"x={self.span[0][0]:.4g}"
+        x_max_str = f"x={self.span[0][1]:.4g}"
+        y_min_str = f"y={self.span[1][0]:.4g}"
+        y_max_str = f"y={self.span[1][1]:.4g}"
+        
+        w_count_str = f"nx={self.ne[0]}"
+        h_count_str = f"ny={self.ne[1]}"
+        
+        # Label width on the left (for y_max, Ny, y_min labels)
+        label_width = max(len(y_max_str), len(h_count_str), len(y_min_str)) + 1
+        
+        # --- Build components ---
+        
+        # Horizontal Border Character
+        H_BORDER = '─'
+        full_width = label_width + 1 + inner_width  # full width for border line construction
+        
+        # Helper function to create padding for centered labels
+        def create_padding(label, total_width, char=H_BORDER):
+            padding_len = total_width - len(label)
+            left_pad = padding_len // 2
+            right_pad = padding_len - left_pad
+            return char * left_pad + label + char * right_pad
 
-        adj = coo_matrix((vec, (ind1, ind2)), shape=(np.prod(self.ne), np.prod(self.ne)))
-        return adj
+        # --- Construct Output Lines ---
+        output = ["\033[1mGRID\033[0m:"]
+
+        # Top Line: y_max ╭─────────nx──────────╮
+        top_center_label = create_padding(w_count_str, inner_width, char=H_BORDER)
+        top_line = f"{y_max_str.ljust(label_width)}╭{top_center_label}╮"
+        output.append(top_line)
+        
+        # Middle Lines: |   (Empty Space)   |
+        for i in range(inner_height):
+            left_label = ' ' * label_width
+            
+            # Place ny label near the vertical center
+            if i == inner_height // 2:
+                left_label = h_count_str.ljust(label_width)
+            
+            middle_line = f"{left_label}│{' ' * inner_width}│"
+            output.append(middle_line)
+
+        # Bottom Line: y_min ╰───────────╯
+        bottom_line = f"{y_min_str.ljust(label_width)}╰{H_BORDER * inner_width}╯"
+        output.append(bottom_line)
+
+        # X-Limits Line: x_min       nx          x_max
+        # Note: x_min and x_max labels need to span the space created by the horizontal border
+        x_min_pad_len = label_width + 1 # Space before x_min
+        x_max_pad_len = full_width - len(x_max_str) - x_min_pad_len
+
+        x_limit_line = (
+            f"{' ' * x_min_pad_len}"
+            f"{x_min_str}"
+            f"{' ' * (inner_width - len(x_min_str) - len(x_max_str) + 1)}" # Spacing between x_min and x_max
+            f"{x_max_str}"
+        )
+        
+        output.append(x_limit_line)
+
+        # Print the final visualization
+        return '\n'.join(output)
+
+
+    @staticmethod
+    def adjacency0(ne, anisotropy=1.0):
+        """
+        Compute the adjacency matrix using a four-point stencil.
+        Allows for anisotropy (> 1 weights horizontal more significantly).
+        This can be called independently of instance of Grid class.
+        """
+        Ne = np.prod(ne)
+        nx = ne[0]
+        
+        w_x, w_y = anisotropy, 1.0
+        ind1, ind2, vec = [], [], []
+
+        for jj in range(Ne):
+            # Horizontal (X)
+            if (jj + 1) % nx != 0:
+                ind1.extend([jj, jj + 1])
+                ind2.extend([jj + 1, jj])
+                vec.extend([w_x, w_x])
+                
+            # Vertical (Y)
+            if jj < (Ne - nx):
+                ind1.extend([jj, jj + nx])
+                ind2.extend([jj + nx, jj])
+                vec.extend([w_y, w_y])
+
+        return coo_matrix((vec, (ind1, ind2)))
+
+    def adjacency(self, **kwargs):
+        """Bridging function to static method."""
+        return Grid.adjacency0(self.ne, **kwargs)
+
+    def isedge(self):
+        """
+        A function to compute which elements are at the edges of the grid domain.
+        """
+        pts = self.ielements
+        # A set of tuples is the fastest way to check existence in Python
+        index_set = set(map(tuple, pts))
+        
+        # Define the 4 cardinal shifts: Left, Right, Top, Bottom
+        # We use broadcasting to calculate all potential neighbor coords at once
+        shifts = [
+            pts + [-1, 0],  # Left
+            pts + [1, 0],   # Right
+            pts + [0, -1],  # Top
+            pts + [0, 1]    # Bottom
+        ]
+        
+        # Generate the boolean mask for each direction
+        # We use a list comprehension over the directions rather than the points
+        edge_types = np.array([
+            [tuple(neighbor) not in index_set for neighbor in shift]
+            for shift in shifts
+        ]).T  # Transpose to get (n, 4) shape
+
+        # Get indices where at least one direction is True
+        is_edge_indices = np.where(edge_types.any(axis=1))[0]
+
+        return is_edge_indices, edge_types
 
     def reshape(self, x):
         return x.reshape([self.ne[1], self.ne[0]])
@@ -134,6 +260,12 @@ class Grid:
                 r[ii][1] = np.log10(r[ii][1])
         
         return np.asarray(r)
+    
+    def marginalize(self, x, axis=0):
+        """
+        Marginalize the size distribution. 
+        """
+        return np.nansum(self.dr()[2-axis] * self.reshape(x), axis=axis)
 
     def dr(self):
         """
@@ -150,7 +282,7 @@ class Grid:
             dr_0[ii] = self.nodes_tr[ii][1:] - self.nodes_tr[ii][:-1]
 
         # Create grid of differential values using ndgrid equivalent (meshgrid in numpy)
-        dr1, dr2 = np.meshgrid(dr_0[0], dr_0[1], indexing='ij')
+        dr2, dr1 = np.meshgrid(dr_0[1], dr_0[0], indexing='ij')
         
         # Ensure positive differential areas in case of reversed edges
         dr1 = np.abs(dr1)
@@ -160,34 +292,6 @@ class Grid:
         dr = (dr1.ravel() * dr2.ravel())
         
         return dr, dr1, dr2
-    
-    def l1(self, w=1, bc=1):
-        """
-        Compute the first-order Tikhonov operator.
-        W adds a weight used to reevaluate the adjacency matrix.
-
-        Parameters:
-        w: Optional weight used to recalculate the adjacency matrix.
-        bc: Optional boundary condition flag. If bc == 0, force zeros at the boundary.
-
-        Returns:
-        l1: First-order Tikhonov operator matrix.
-        """
-        
-        adj_local = Grid.adjacency(self, w)  # Reevaluate adjacency with weight
-        
-        # Compute L1: -diag(sum(tril(adj_local))) + triu(adj_local)
-        l1 = -np.diag(np.sum(np.tril(adj_local.todense()), axis=1)) + np.triu(adj_local.todense())
-        
-        # Add unity on diagonal in final row for stability in square matrix
-        l1[-1, -1] = -1
-        
-        if bc == 0:  # Force zeros at boundary condition
-            isedge = np.where(self.elements[:, 1] == self.edges[1][-1])[0]
-            isedge = np.concatenate((isedge, np.where(self.elements[:, 0] == self.edges[0][-1])[0]))
-            l1[np.ix_(isedge, isedge)] = np.eye(len(isedge))  # Replace entries with identity
-        
-        return l1
     
     def ray_sum(self, r, slope, f_bar=True):
         """
@@ -254,11 +358,16 @@ class Grid:
 
         return C, rmin, rmax
     
-    def plot2d(self, x, cmap=sns.color_palette('rocket_r', as_cmap=True), **kwargs):
+    def plot2d(self, x, cmap='rocket_r', bg=True,**kwargs):
+
+        if type(cmap) is str:
+            cmap = get_colormap(cmap)
 
         xp, yp = np.meshgrid(self.edges[0], self.edges[1])
         
-        plt.pcolor(xp, yp, self.reshape(x), cmap=cmap, **kwargs)
+        mesh = plt.pcolor(xp, yp, self.reshape(x), cmap=cmap, **kwargs)
+
+        # This creates an empty version of the plot with axes for saving purposes.
 
         if self.discrete[0] == 'log':
             plt.xscale('log')
@@ -266,13 +375,72 @@ class Grid:
         if self.discrete[1] == 'log':
             plt.yscale('log')
 
+        # -- PLOT ONLY AXES WITHOUT FILL --
+        if bg==False:
+            limx = plt.xlim()  # only get axis limits
+            limy = plt.ylim()
+
+            plt.cla()  # clear axes to reset
+
+            plt.plot([], [])  # plot empty axes
+            plt.xlim(limx)
+            plt.ylim(limy)
+            if self.discrete[0] == 'log':
+                plt.xscale('log')
+            if self.discrete[1] == 'log':
+                plt.yscale('log')
+        # ---------------------------------
+
         if not self.type == None:
             plt.xlabel(self.type[0])
             plt.ylabel(self.type[1])
 
         plt.gca().set_box_aspect(1)
 
-    def scatter(self, x, cmap=sns.color_palette('mako_r', as_cmap=True), edgecolors='k', linewidth=0.2, **kwargs):
+        return mesh
+    
+    def plot2d_marg(self, x, n=5, **kwargs):
+        """
+        Bidimensional plot with marginal distributions. 
+        """
+
+        ax_main = plt.subplot2grid((n, n), (1, 0), colspan=n, rowspan=n-1)
+        mesh = self.plot2d(x, **kwargs)
+
+        ax_top = plt.subplot2grid((n, n), (0, 0), colspan=n, rowspan=1, sharex=ax_main)
+        plt.plot(self.edges[0], self.marginalize(x, axis=0))
+
+        ax_top.tick_params(axis='y', left=False, labelleft=False)
+        ax_top.tick_params(axis='x', bottom=True, labelbottom=False)
+        plt.xscale('log')
+
+        ax_right = plt.subplot2grid((n, n), (1, n-1), colspan=1, rowspan=n-1, sharey=ax_main)
+        plt.plot(self.marginalize(x, axis=1), self.edges[1])
+        ax_right.tick_params(axis='y', left=False, labelleft=False)
+        ax_right.tick_params(axis='x', bottom=True, labelbottom=False)
+        plt.yscale('log')
+
+        # --- ALIGN AXES ---
+        # Force the top and right plots to match the 'shrunk' dimensions of the 1:1 box
+        plt.draw() # Necessary to calculate the box aspect positions
+
+        # Adjust Top Plot width to match Main Plot
+        pos_main = ax_main.get_position()
+        pos_top = ax_top.get_position()
+        ax_top.set_position([pos_main.x0, pos_top.y0, pos_main.width, pos_top.height])
+
+        # Adjust Right Plot height to match Main Plot
+        pos_right = ax_right.get_position()
+        ax_right.set_position([pos_right.x0, pos_main.y0, pos_right.width, pos_main.height])
+
+        plt.sca(ax_main)
+
+        return ax_main, ax_top, ax_right, mesh
+
+    def scatter(self, x, cmap='mako_r', edgecolors='k', linewidth=0.2, **kwargs):
+
+        if type(cmap) is str:
+            cmap = get_colormap(cmap)
         
         plt.scatter(self.elements[:,0], self.elements[:,1], 20 + 35 * x / np.max(x), x, \
                     cmap=cmap, edgecolors=edgecolors, linewidth=linewidth, **kwargs)
@@ -356,40 +524,38 @@ class PartialGrid(Grid):
 
         # Update grid properties after truncation
         self.elements = self.elements[self.remaining, :]
+        self.ielements = self.ielements[self.remaining, :]
         self.nelements = self.nelements[self.remaining, :]
         self.nelements_tr = self.nelements_tr[self.remaining, :]
         self.Ne = self.elements.shape[0]
 
-        self.adj, _ = PartialGrid.adjacency(self)
+        self.adj = PartialGrid.adjacency(self)
 
-    
-    def adjacency(self, w=1):
-        """
-        Compute the adjacency matrix for the full grid using a four-point stencil.
-        
-        Parameters:
-        w: Optional weight to apply to vertical pixels.
-        
-        Returns:
-        adj: Adjacency matrix after processing.
-        isedge: Boolean array indicating whether an element is adjacent to a new edge.
-        """
 
+    def adjacency(self, **kwargs):
         # Call inherited adjacency method from the Grid class
-        adj = Grid.adjacency(self, w)
-        adj = adj.todense()
-
-        # Identify elements next to the new edge
-        adju = np.triu(adj, 2)  # Get the upper triangle of the matrix with offset 2
-        isedge = np.any(adju[:, self.missing], axis=1)  # Check for adjacency to missing elements
-        isedge = np.delete(isedge, self.missing)  # Remove missing elements from the edge flagging
+        adj = Grid.adjacency(self, **kwargs)
         
         # Remove rows and columns corresponding to missing elements
-        adj = adj[self.remaining, :]
-        adj = adj[:, self.remaining]
+        adj = adj.tocsr()
+        adj = adj[self.remaining, :][:, self.remaining]
         adj = coo_matrix(adj)
 
-        return adj, isedge
+        return adj
+    
+    # def isedge(self):
+    #     """
+    #     A function to compute which elements are at the edges of the grid domain.
+    #     """
+    #     # Identify elements next to the new edges.
+    #     adju = sp.triu(Grid.adjacency(self, 1), 2).tocsr()  # Get the upper triangle of the matrix with offset 2
+    #     missingedge = adju[:, self.missing].sum(axis=1).flatten().astype(bool)  # Check for adjacency to missing elements
+    #     missingedge = np.delete(missingedge, self.missing)  # Remove missing elements from the edge flagging
+    #     missingedge = np.where(missingedge.A1)[0]
+
+    #     # Finally, return the combination of the 
+    #     # original edge elements for full grid with the new edge elements.
+    #     return np.concatenate((Grid.isedge(self), missingedge))
     
     def reshape(self, x):
         x = self.partial2full(x)
@@ -408,7 +574,7 @@ class PartialGrid(Grid):
         # NOTE: Could add areas for partial cells. Currently use whole cells if any part is in the domain. 
 
         return dr, dr1, dr2
-    
+           
     def l1(self, w=1, bc=1):
         """
         Compute the first-order Tikhonov operator.
@@ -466,7 +632,7 @@ class PartialGrid(Grid):
         """
         
         x[np.isnan(x)] = 0
-        super().plot2d(x, **kawrgs)
+        mesh = super().plot2d(x, **kawrgs)
 
         ncut = len(self.slope)
 
@@ -484,3 +650,24 @@ class PartialGrid(Grid):
             plt.plot(xl, ye, color='k', linewidth=0.5, linestyle='--')
 
         plt.gca().set_ylim(yl)
+
+        return mesh
+    
+    def transpose(self, x=None):
+        if np.shape(self.r)[0] == 1:  # if only one line, add second at -np.inf
+            r = np.vstack((self.r, [[self.r[0][0],-np.inf]]))
+            slope = np.concatenate((self.slope, [1]))
+        else:
+            r = self.r
+            slope = self.slope
+
+        grid = PartialGrid(edges=[self.edges[1], self.edges[0]], discrete=np.flip(self.discrete), 
+                           r=np.flip(np.flip(r, axis=1), axis=0), slope=[1/sl for sl in slope])
+        if not self.type == None:
+            grid.type = [self.type[1], self.type[0]]
+
+        if np.any(x == None):
+            return grid
+        else:
+            x = grid.full2partial((self.reshape(x).T).ravel())
+            return grid, x

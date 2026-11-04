@@ -42,13 +42,13 @@ plt.show()
 
 # Least-squares
 print('Running least-squares ...')
-x_lsq, _ = invert.lsq(Lb @ A, Lb @ b)
+x_lsq = invert.lsq(Lb @ A, Lb @ b)
 autils.textdone()
 
 # Twomey
 print('Running Twomey:')
 xi = invert.get_init(Lb @ A, Lb @ b, m, m_star)
-x_two = invert.twomey(Lb @ A, Lb @ b, xi, f_bar=True)
+x_two = invert.twomey(Lb @ A, Lb @ b, xi, show_progress=True)
 autils.textdone()
 
 # Twomey-Markowski

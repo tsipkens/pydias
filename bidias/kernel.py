@@ -4,7 +4,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 from autils import autils
-from bidias.tools import textdone
+from cmap import textdone
 from tfer import tfer
 
 def check_type(type, str):
@@ -18,11 +18,27 @@ def check_type(type, str):
         return None
 
 
-def build(grid_i, spec, z=None, grid_b=None, type=None):
+def expand_sp(sp0, grid_b, prop_pma, dim=0):
+    """
+    Expands a setpoint structure for a provided grid.
+    """
+    # Initialize vector.
+    omega = np.zeros_like(grid_b.elements[:,dim])
+    v = np.zeros_like(grid_b.elements[:,dim])
+
+    # Loop through setpoints and compare to masses in grid.
+    for ii in range(len(sp0)):
+        mask = grid_b.elements[:,dim] == sp0[ii]['m_star'] * 1e18
+        omega[mask] = sp0[ii]['omega']
+        v[mask] = sp0[ii]['V']
+    return tfer.get_setpoint(prop_pma, 'V', v, 'omega', omega)[0]  # recompile into new setpoint list
+
+
+def build(grid_i, spec, z=None, grid_b=None, type=None, detect='number'):
     """
     Interfaces with transfer function and charge fractions to build kernels for bidimensional problems. 
     """
-
+    
     print('\r' + '\033[36m' + '[ BUILDING KERNEL ]' + '\033[0m')
 
     #== Parse inputs =================================#
@@ -51,27 +67,35 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     mrbc_idx = check_type(type, 'mrbc')
     frbc_idx = check_type(type, 'frbc')
     
-    # MASS CHECK.
+    # ------- MASS CHECK --------
     # Unpack grid elements for transfer function evaluation.
+    mp = None
     if rho_idx is not None:
         for ii in np.arange(len(spec)):
             if spec[ii][0] == 'pma':
                 prop_p = spec[ii][2]
         
         if mp_idx is None:
-            m = (np.pi/6) * grid_i.elements[:, rho_idx] * \
-                grid_i.elements[:, dm_idx] ** 3 * 1e-9
+            if dm_idx is None:
+                da = grid_i.elements[:, da_idx]  # then assume da_idx is available
+                dm = autils.da_rhoeff2dm(da * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
+            else:
+                dm = grid_i.elements[:, dm_idx]  # otherwise, extract dm from grid
+            mp = (np.pi/6) * grid_i.elements[:, rho_idx] * dm ** 3 * 1e-9  # now compute mass
+            
+        if da_idx is None:
+            da = autils.dm_rhoeff2da(dm * 1e-9, grid_i.elements[:, rho_idx]) * 1e9
 
     elif mp_idx is not None:
-        m = grid_i.elements[:, mp_idx]
+        mp = grid_i.elements[:, mp_idx]
     
-    # MOBILITY CHECK.
+    # -------- MOBILITY CHECK --------
     # Handle cases where mobility diameter isn't given (required for PMA/charging).
     if dm_idx is None:
         # OPTION 1: Use da and mp to compute dm if available
         if da_idx is not None and mp_idx is not None:
             da = grid_i.elements[:, da_idx]
-            dm = autils.mp_da2dm(m, da)
+            dm = autils.mp_da2dm(mp * 1e-18, da * 1e-9) * 1e9
 
         # OPTION 2: Apply mass-mobility relationship
         elif mp_idx is not None:
@@ -81,10 +105,17 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             print('Invoking mass-mobility relationship to determine dm.')
             dm = autils.mp2dm(grid_i.elements[:, mp_idx] * 1e-18, prop_p) * 1e9
+
     else:  # otherwise use explicit mobility diameter dimension
         dm = grid_i.elements[:, dm_idx]
 
-    # MRBC CHECK.
+    # -------- AERODYNAMIC CHECK --------
+    if da_idx is not None:
+        da = grid_i.elements[:, da_idx]
+    elif mp is not None:
+        da = autils.dm_mp2da(dm * 1e-9, mp * 1e-18) * 1e9
+
+    # -------- MRBC CHECK --------
     # Handle cases where mrbc is not given. Only relevant to SP2.
     if mrbc_idx is None:
         if frbc_idx is not None:  # then, convert from frbc
@@ -94,18 +125,22 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     else:  # otherwise use explicit mrbc dimension
         mrbc = grid_i.elements[:, mrbc_idx]
 
-    
-    # Loop over classifiers to compute Lambda
-    for ii in range(nc):
+    # -------- PROCEED TO BUILD KERNEL --------
+    for ii in range(nc):  # loop over classifiers
         classifier = spec[ii][0]
         
-        if classifier == 'charger':
+        if classifier == 'charger':  # add charger and charge fractions
             print('Computing charger contribution ...', end="", flush=True)
             
             d, idx = np.unique(dm, return_inverse=True)
 
-            f_z, _, _ = tfer.charger(d, z)
+            f_z, _, _ = tfer.charger(d, z, *spec[ii][1:])
             f_z = np.expand_dims(f_z, 0)
+            
+            # if nc > 1:
+            #     size = np.size(Lambda[0], 0)  # extract data length from previous Lambda entry
+            # else:
+            #     size = 1
             
             Lambda[ii] = np.repeat(f_z, np.size(Lambda[0], 0), axis=0)
 
@@ -113,7 +148,7 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             textdone()
         
-        elif classifier in ['dma', 'smps']:
+        elif classifier in ['dma', 'smps']:  # differential mobility analyzer
             print('Computing DMA contribution ...', end="", flush=True)
 
             d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
@@ -126,28 +161,35 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             textdone()
         
-        elif classifier == 'pma':
+        elif classifier == 'pma':  # particle mass analyzer (CPMA/APM)
             print('Computing PMA contribution ...', end="", flush=True)
 
-            sp = tfer.unpack(spec[ii][1])
+            sp = spec[ii][1]
+            if isinstance(sp, list):
+                sp = tfer.unpack(sp)
 
             # Use voltage and angular speed to find unique setpoints.
             # This speeds up computation.
-            v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries
-            sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
+            if isinstance(sp, dict):
+                v_star, idx_star = np.unique(np.hstack((sp['V'], sp['omega'])), return_inverse=True, axis=0)  # find unique entries
+                sp, _ = tfer.get_setpoint(spec[ii][2], 'V', v_star[:,0], 'omega', v_star[:,1])
+            else:
+                sp, idx_star = sp.unique()  # find unique entries
+                sp = tfer.pack(sp)
             
-            v, idx = np.unique(np.vstack((m, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            v, idx = np.unique(np.vstack((mp, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            # v, idx = np.unique(np.vstack((mp, autils.mp2dm(grid_i.elements[:, mp_idx] * 1e-18, spec[ii][2]) * 1e9)).T, return_inverse=True, axis=0)
             m = v[:,0]
             d = v[:,1]
 
-            Lambda[ii], _ = tfer.pma(sp, m, d, z, spec[ii][2], '1C')
+            Lambda[ii], _ = tfer.pma(sp, m, d, z, spec[ii][2], '1C_diff')
 
             Lambda[ii] = Lambda[ii][idx_star,:,:]
             Lambda[ii] = Lambda[ii][:,idx,:]
 
             textdone()
         
-        elif classifier in ['sp2', 'bin']:
+        elif classifier in ['sp2', 'bin']:  # binned contributions (also used for SP2)
             print('Computing binned contribution ...', end="", flush=True)
 
             if classifier == 'sp2':
@@ -183,15 +225,45 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
 
             textdone()
 
+        elif classifier == 'aac':  # aerodynamic classifier (e.g., AAC)
+            print('Computing AAC contribution ....', end="", flush=True)
+            if isinstance(spec[ii][1], np.ndarray):
+                d_star, idx_star = np.unique(spec[ii][1], return_inverse=True)  # find unique entries to speed computation
+            else:
+                d_star, idx_star = spec[ii][1].unique()
+            
+            v, idx = np.unique(np.vstack((da, dm)).T, return_inverse=True, axis=0)  # extract corresponding mobility diameters from grid
+            d = v[:,0]
+            d2 = v[:,1]  # mobility diameter
+
+            Lambda[ii], _, _= tfer.aac(d_star, d, spec[ii][2], spec[ii][3], dm=d2)
+
+            Lambda[ii] = Lambda[ii][idx_star,:]
+            Lambda[ii] = Lambda[ii][:,idx]
+            
+            # Add dimensions in case charging.
+            Lambda[ii] = np.expand_dims(Lambda[ii], axis=2)
+
+            textdone()
     
     # Compile the kernel
     print("Compiling kernel ...", end="", flush=True)
     Ac = Lambda[0]
     for ii in range(1, nc):
-        Ac = Ac * Lambda[ii]
+        Ac = Ac * Lambda[ii]  # cannot use *= as dimensions may change
+
+    # Zero any NaN values (e.g., can occur when using dm-mp grid with AAC).
+    Ac[np.isnan(Ac)] = 0
     
+    # If detector measures charge (i.e., electrometer), adjust charge state weighting. 
+    if detect == 'charge' and np.shape(Ac)[2] == len(z):
+        print(' + charge weighting ...', end="", flush=True)
+        A = np.sum(Ac * np.expand_dims(z, [0,1]), axis=2)
+
+    else:  # otherwise sum to get count/number
+        A = np.sum(Ac, axis=2)
+
     # Sum over charge states and multiply by grid area
-    A = np.sum(Ac, axis=2)
     A = A * grid_i.dr()[0]
     
     # Convert to sparse matrix
@@ -202,6 +274,33 @@ def build(grid_i, spec, z=None, grid_b=None, type=None):
     print('\r' + '\033[36m' + '[ COMPLETE! ]' + '\033[0m' + '\n\n')
     
     return A, Ac
+
+
+def build_charge(grid_i, prop_dma=None, grid_b=None, z1=None):
+    """
+    Wrapper to generate code for a kernel to invert the charge distributions 
+    instead of the size distribution.
+    """
+
+    z = grid_i.edges[check_type(grid_i.type, 'z')]
+    d1 = grid_b.elements[:, check_type(grid_b.type, 'dstar1')]
+    d2 = grid_b.elements[:, check_type(grid_b.type, 'dstar2')]
+
+    # -- First classifier --
+    A1, _ = build(grid_i, [['dma', d1, prop_dma], ['charger']], z1)
+
+    # -- Second classifier --
+    _, A2c = build(grid_i, [['dma', d2, prop_dma]], z)
+
+    A2d = np.zeros(A2c.shape[:2])
+
+    for ii in range(A2c.shape[1]):
+        z_ii = int(grid_i.elements[ii, 1])
+        A2d[:, ii] = A2c[:, ii, np.where(z == z_ii)[0][0]]
+
+    A = A1 * A2d
+
+    return A
 
 
 def gen_smps_t(d_star, t_star, d, t, z=None, argin_dma=None, argin_z=None):

@@ -93,7 +93,7 @@ plt.xlabel('Fuchs, nit = 4e13')
 opts['nit'] = 5e11
 Ac4, _, _ = tfer.charger(d_star, z4, model='fuchs', opts=opts)  # Replace with actual function
 
-plt.subplot(5, 1, 4)
+plt.subplot(5, 1, 3)
 cm = plt.get_cmap(cmap_name, np.size(d_star) + 1).colors
 for ii in range(np.size(d_star)):
     plt.semilogx(np.concatenate(([[0.5]], z4[1:])), Ac4[ii,:], 'o-', color=cm[ii])
